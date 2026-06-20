@@ -11,6 +11,7 @@ from models.chapter import ChapterMetadata, Chapter
 from models.facts import FactCategory, FactConfidence, FactEntry, FactLedger
 from models.foreshadow import ForeshadowStatus, ForeshadowType, ForeshadowEntry, ForeshadowLedger
 from models.rag import DocumentCategory, RAGDocument, RAGQueryResult
+from models.power_level import PowerTier, PowerLevelRecord, GoldenFingerCost, PowerLevelLedger
 
 __all__ = [
     # Project
@@ -52,4 +53,9 @@ __all__ = [
     "DocumentCategory",
     "RAGDocument",
     "RAGQueryResult",
+    # Power Level
+    "PowerTier",
+    "PowerLevelRecord",
+    "GoldenFingerCost",
+    "PowerLevelLedger",
 ]

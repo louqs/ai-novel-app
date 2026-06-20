@@ -143,7 +143,7 @@ class KnowledgeUpdater:
         return True
 
     async def _reindex_file(self, name: str, file_path: Path, content: str) -> None:
-        """将更新后的文件重新索引到 RAG。"""
+        """将更新后的文件重新索引到 RAG，并同步更新知识包的更新时间。"""
         try:
             from models.rag import DocumentCategory, RAGDocument
             cat = {
@@ -164,8 +164,33 @@ class KnowledgeUpdater:
                 store = getattr(self._kernel._retrieval_engine, '_store', None)
                 if store and hasattr(store, 'index_documents'):
                     await store.index_documents([doc])
-        except Exception:
-            pass  # RAG 索引失败不影响主流程
+
+            # 同步更新对应知识包的更新时间
+            pack_name_map = {
+                "hot_genres": "hot-genres-2026",
+                "writing_tips": "fanqie-writing-tips",
+                "platform_rules": "platform-rules",
+                "internet_memes": "internet-memes",
+                "southwest_dialect": "southwest-dialect",
+            }
+            pack_name = pack_name_map.get(name)
+            if pack_name:
+                pack_yaml = Path("knowledge_base/packs") / pack_name / "pack.yaml"
+                if pack_yaml.exists():
+                    import yaml
+                    meta = yaml.safe_load(pack_yaml.read_text(encoding="utf-8"))
+                    meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    # 递增版本号
+                    version = meta.get("version", "0.1.0")
+                    parts = version.split(".")
+                    if len(parts) == 3:
+                        parts[2] = str(int(parts[2]) + 1)
+                        meta["version"] = ".".join(parts)
+                    pack_yaml.write_text(yaml.dump(meta, allow_unicode=True), encoding="utf-8")
+                    logger.info("知识包版本已更新", pack_name=pack_name, version=meta.get("version"))
+
+        except Exception as exc:
+            logger.warning("RAG 索引失败", error=str(exc))
 
     async def get_update_status(self) -> dict[str, Any]:
         """获取更新状态。"""

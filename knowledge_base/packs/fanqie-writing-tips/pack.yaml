@@ -1,15 +1,17 @@
 author: AI Novel App
-created_at: '2026-06-19T12:03:57.524481+00:00'
+check_interval: weekly
+created_at: '2026-06-20T16:48:17.496570+00:00'
 dependencies: []
 description: 番茄小说平台爆款公式、黄金三章、章中钩子、书名技巧、赛道分析
 genres: []
 name: fanqie-writing-tips
 platforms: []
+source_url: ''
 tags:
 - 写作技巧
 - 番茄
 - 新手
 title: 番茄小说写作技巧包
 type: knowledge_pack
-updated_at: '2026-06-19T12:03:57.524495+00:00'
+updated_at: '2026-06-20T16:48:17.496592+00:00'
 version: 0.1.0

@@ -1,0 +1,23 @@
+name: ai-reduction
+version: 1.0.0
+type: knowledge_pack
+title: AI降重技能库
+description: 融合双阶段降重、智能类型识别、多类型特色优化等完整降重策略
+author: AI Novel App
+tags:
+  - 降重
+  - AI率
+  - 去AI味
+  - 双阶段
+  - 类型识别
+platforms:
+  - fanqie
+  - qidian
+  - jinjiang
+genres:
+  - 通用
+created_at: '2026-06-21T03:00:00+00:00'
+updated_at: '2026-06-21T03:00:00+00:00'
+dependencies: []
+source_url: ''
+check_interval: monthly

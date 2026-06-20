@@ -5,19 +5,50 @@
 <div class="card">
     <textarea id="text-input" rows="10" placeholder="在此粘贴小说文本（建议500字以上以获得更好的改写效果）..." style="width:100%;padding:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:14px;line-height:1.8;resize:vertical;font-family:inherit"></textarea>
     <span id="char-count">0 字</span>
-    <div style="margin:8px 0">
-        <button class="btn btn-primary" onclick="step1_detect()">1.检测</button>
-        <button class="btn" onclick="step2_humanize()">2.AI改写</button>
+    <div style="margin:8px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="step1_detect()">🔍 检测AI率</button>
+        <button class="btn" onclick="autoReduce()" id="btn-reduce">🔄 智能降重</button>
+        <span class="muted" style="font-size:11px">自动检测+改写，直到AI率达标</span>
+        <div style="display:flex;align-items:center;gap:4px;margin-left:8px">
+            <span class="muted" style="font-size:11px">目标AI率:</span>
+            <input type="number" id="target-ai-rate" value="30" min="0" max="100" style="width:50px;padding:2px 4px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:12px">
+            <span class="muted" style="font-size:11px">%</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:4px;margin-left:8px">
+            <span class="muted" style="font-size:11px">降重模式:</span>
+            <select id="reduce-mode" onchange="showModeDesc()" style="padding:2px 4px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:12px">
+                <option value="three_axe" selected>降重三板斧（推荐）</option>
+                <option value="chaos">混沌口语流</option>
+                <option value="standard">标准改写</option>
+                <option value="light">轻量修正</option>
+                <option value="deep">深度重写</option>
+            </select>
+        </div>
+    </div>
+    <div id="mode-desc" style="margin-top:4px;padding:8px;background:var(--surface);border-radius:4px;font-size:12px;display:none"></div>
     </div>
     <div id="progress-bar" style="display:none;margin-top:8px;height:4px;background:var(--border);border-radius:2px"><div id="progress-fill" style="height:100%;width:0;background:var(--accent);border-radius:2px;transition:width 0.3s"></div></div>
 </div>
+
+<!-- 在线检测 -->
+<div class="card">
+    <h2>📡 在线AI检测（更准确）</h2>
+    <p class="muted" style="font-size:12px;margin-bottom:8px">本地检测仅供参考，在线平台检测更准确</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" onclick="onlineDetect('tianyan')">🔍 天眼AI（免费）</button>
+        <button class="btn" onclick="onlineDetect('zhuqi')">🔍 朱雀AIGC检测</button>
+    </div>
+    <div id="online-detect-result" style="margin-top:12px;display:none"></div>
+</div>
+
 <div class="card" id="detect-card" style="display:none"><h2>检测结果</h2><div id="detect-result"></div></div>
 <div class="card" id="merge-card" style="display:none">
-    <div class="section-header"><h2>合并对比</h2><div><button class="btn btn-sm" onclick="batchAccept()">全部采纳</button><button class="btn btn-sm" onclick="batchReject()">全部忽略</button><span class="muted" id="merge-stats" style="margin-left:8px"></span></div></div>
+    <div class="section-header"><h2>合并对比</h2><div><button class="btn btn-sm" id="btn-select-all">全选改写</button><button class="btn btn-sm" id="btn-deselect-all">全选原文</button><span class="muted" id="merge-stats" style="margin-left:8px"></span></div></div>
+    <p class="muted" style="font-size:12px;margin-bottom:8px">💡 点击卡片切换改写/原文，点击「编辑」自定义内容，点击原文跳转到对应位置</p>
     <div class="merge-three-col">
-        <div class="merge-col orig-col"><div class="col-header">原文</div><div id="col-original" class="col-body"></div></div>
-        <div class="merge-col diff-col"><div class="col-header">差异卡片</div><div id="col-diffs" class="col-body"></div></div>
-        <div class="merge-col final-col"><div class="col-header">合并结果</div><textarea id="col-final" class="col-body-edit"></textarea></div>
+        <div class="merge-col orig-col"><div class="col-header">📄 原文</div><div id="col-original" class="col-body"></div></div>
+        <div class="merge-col diff-col"><div class="col-header">🔄 差异卡片（点击选择）</div><div id="col-diffs" class="col-body"></div></div>
+        <div class="merge-col final-col"><div class="col-header">✅ 合并结果</div><textarea id="col-final" class="col-body-edit"></textarea></div>
     </div>
     <div style="margin-top:8px"><button class="btn btn-primary" onclick="applyMerge()">应用合并结果</button><button class="btn" onclick="document.getElementById('merge-card').style.display='none'">取消</button></div>
 </div>
@@ -53,9 +84,178 @@ async function step1_detect(){
     try{
         const r=await fetch('/api/v1/anti-ai/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
         const d=await r.json();
-        const cls=d.ai_score>0.7?'ok':(d.ai_score>0.4?'warn':'bad');
-        let h='<div class="score-display"><div class="score-circle '+cls+'"><span class="score-number">'+(d.ai_score*100).toFixed(0)+'</span></div><p>'+(d.ai_score>0.7?'像人类':(d.ai_score>0.4?'有AI痕迹':'高度疑似AI'))+'</p></div>';
-        if(d.pattern_matches&&d.pattern_matches.length){h+='<div class="plugin-tags">';for(const m of d.pattern_matches)h+='<span class="tag severity-'+m.severity+'">'+m.category+' ('+m.count+')</span>';h+='</div>';}
+        const aiRate=Math.round((1-d.ai_score)*100); // AI率: 越低越好
+        const cls=aiRate<30?'ok':(aiRate<60?'warn':'bad');
+        const label=aiRate<30?'✅ 人类写作':(aiRate<60?'⚠️ 有AI痕迹':'❌ AI痕迹明显');
+
+        let h='<div style="display:flex;gap:20px;align-items:flex-start">';
+        // 左侧：AI率
+        h+='<div class="score-display"><div class="score-circle '+cls+'"><span class="score-number">'+aiRate+'%</span></div><p style="margin-top:8px;font-weight:600">AI率</p><p class="muted" style="font-size:12px">'+label+'</p></div>';
+
+        // 右侧：详细分析
+        h+='<div style="flex:1">';
+        // 句长均匀度
+        if(d.sentence_uniformity){
+            const su=d.sentence_uniformity;
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>📊 句长分析</strong><br>';
+            h+='标准差: <span class="'+(su.is_uniform?'bad':'ok')+'">'+su.sd+'</span>';
+            h+=' (均匀度: '+(su.is_uniform?'⚠️ 过于均匀':'✅ 正常')+')';
+            if(su.suggestion) h+='<br><span class="muted" style="font-size:12px">'+su.suggestion+'</span>';
+            h+='</div>';
+        }
+
+        // 词汇多样性
+        if(d.vocabulary_diversity!==undefined){
+            const vdd=d.vocabulary_diversity;
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>📚 词汇多样性</strong><br>';
+            h+='重复率惩罚: <span class="'+(vdd>0.1?'bad':'ok')+'">'+(vdd*100).toFixed(0)+'%</span>';
+            h+=' ('+(vdd>0.1?'⚠️ 词汇重复率高':'✅ 词汇多样')+')';
+            h+='</div>';
+        }
+
+        // 句式重复度
+        if(d.sentence_patterns!==undefined){
+            const sp=d.sentence_patterns;
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>🔄 句式分析</strong><br>';
+            h+='句式惩罚: <span class="'+(sp>0.1?'bad':'ok')+'">'+(sp*100).toFixed(0)+'%</span>';
+            h+=' ('+(sp>0.1?'⚠️ 句式重复':'✅ 句式多样')+')';
+            h+='</div>';
+        }
+
+        // 情感标签化
+        if(d.emotion_labels!==undefined){
+            const el=d.emotion_labels;
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>💭 情感标签化</strong><br>';
+            h+='情感惩罚: <span class="'+(el>0.05?'bad':'ok')+'">'+(el*100).toFixed(0)+'%</span>';
+            h+=' ('+(el>0.05?'⚠️ 情感标签过多':'✅ 情感描写具体')+')';
+            h+='</div>';
+        }
+
+        // 描写模式化
+        if(d.description_patterns!==undefined){
+            const dp=d.description_patterns;
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>🎨 描写模式化</strong><br>';
+            h+='描写惩罚: <span class="'+(dp>0.05?'bad':'ok')+'">'+(dp*100).toFixed(0)+'%</span>';
+            h+=' ('+(dp>0.05?'⚠️ 描写模板化':'✅ 描写多样')+')';
+            h+='</div>';
+        }
+
+        // 对话套路化
+        if(d.dialogue_patterns!==undefined){
+            const dlg=d.dialogue_patterns;
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>💬 对话套路化</strong><br>';
+            h+='对话惩罚: <span class="'+(dlg>0.05?'bad':'ok')+'">'+(dlg*100).toFixed(0)+'%</span>';
+            h+=' ('+(dlg>0.05?'⚠️ 对话套路':'✅ 对话自然')+')';
+            h+='</div>';
+        }
+
+        // AI模板词（新增）
+        if(d.template_words){
+            const tw=d.template_words;
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>🤖 AI模板词</strong><br>';
+            h+='总次数: <span class="'+(tw.is_excessive?'bad':'ok')+'">'+tw.total+'</span>';
+            h+=' ('+(tw.is_excessive?'❌ 超限(≤8)':'✅ 正常')+')';
+            if(tw.suggestion) h+='<br><span class="muted" style="font-size:12px">'+tw.suggestion+'</span>';
+            h+='</div>';
+        }
+
+        // AI心理套路（新增）
+        if(d.psychology_cliche){
+            const pc=d.psychology_cliche;
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>💭 AI心理套路</strong><br>';
+            h+='合并次数: <span class="'+(pc.level==='critical'?'bad':(pc.level==='warning'?'warn':'ok'))+'">'+pc.total+'</span>';
+            h+=' ('+(pc.level==='pass'?'✅ 正常':(pc.level==='warning'?'⚠️ 偏多':'❌ 泛滥'))+')';
+            if(pc.suggestion) h+='<br><span class="muted" style="font-size:12px">'+pc.suggestion+'</span>';
+            h+='</div>';
+        }
+
+        // 中二独白（新增）
+        if(d.cringe_monologue){
+            const cm=d.cringe_monologue;
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>😤 中二独白</strong><br>';
+            h+='出现次数: <span class="'+(cm.level==='critical'?'bad':(cm.level==='warning'?'warn':'ok'))+'">'+cm.total+'</span>';
+            h+=' ('+(cm.level==='pass'?'✅ 正常':(cm.level==='warning'?'⚠️ 偏多':'❌ 泛滥'))+')';
+            if(cm.suggestion) h+='<br><span class="muted" style="font-size:12px">'+cm.suggestion+'</span>';
+            h+='</div>';
+        }
+
+        // Humanizer模式（新增）
+        if(d.humanizer_patterns){
+            const hp=d.humanizer_patterns;
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>🔧 Humanizer模式</strong><br>';
+            h+='A类(排比/谄媚): <span class="'+(hp.a_total>3?'bad':'ok')+'">'+hp.a_total+'</span> | ';
+            h+='B类(AI套话): <span class="'+(hp.b_total>5?'bad':'ok')+'">'+hp.b_total+'</span>';
+            if(hp.suggestion) h+='<br><span class="muted" style="font-size:12px">'+hp.suggestion+'</span>';
+            h+='</div>';
+        }
+
+        // 对话引号（新增）
+        if(d.dialogue_quotes){
+            const dq=d.dialogue_quotes;
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>📝 对话引号</strong><br>';
+            h+='引号对数: <span class="'+(dq.is_adequate?'ok':'bad')+'">'+dq.quote_pairs+'</span>';
+            h+=' ('+(dq.is_adequate?'✅ 充足':'❌ 不足')+')';
+            if(dq.suggestion) h+='<br><span class="muted" style="font-size:12px">'+dq.suggestion+'</span>';
+            h+='</div>';
+        }
+
+        // "不是X是Y"检测
+        if(d.not_x_but_y){
+            const nxy=d.not_x_but_y;
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>⚠️ "不是X是Y"句式</strong><br>';
+            h+='检测到: <span class="'+(nxy.is_excessive?'bad':'ok')+'">'+nxy.count+' 处</span>';
+            h+=' ('+(nxy.is_excessive?'❌ 超过阈值(≤2)':'✅ 正常')+')';
+            if(nxy.suggestion) h+='<br><span class="muted" style="font-size:12px">'+nxy.suggestion+'</span>';
+            h+='</div>';
+        }
+
+        // 泛化结尾
+        if(d.generic_ending){
+            const ge=d.generic_ending;
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>📝 结尾分析</strong><br>';
+            h+=(ge.has_generic_ending?'⚠️ 检测到泛化结尾':'✅ 结尾具体');
+            if(ge.found&&ge.found.length) h+=': <span class="bad">'+ge.found.join(', ')+'</span>';
+            if(ge.suggestion) h+='<br><span class="muted" style="font-size:12px">'+ge.suggestion+'</span>';
+            h+='</div>';
+        }
+
+        // 模式匹配
+        if(d.pattern_matches&&d.pattern_matches.length){
+            h+='<div style="margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">';
+            h+='<strong>🔍 AI 模式检测</strong><br>';
+            h+='<div style="margin-top:4px">';
+            for(const m of d.pattern_matches){
+                const sevColor=m.severity==='high'?'bad':(m.severity==='medium'?'warn':'muted');
+                h+='<span class="tag" style="margin:2px"><span class="'+sevColor+'">'+m.severity.toUpperCase()+'</span> '+m.category+' ('+m.count+'处)</span>';
+            }
+            h+='</div>';
+            // 显示具体匹配项
+            h+='<div style="margin-top:8px;font-size:12px">';
+            for(const m of d.pattern_matches){
+                if(m.items&&m.items.length){
+                    h+='<div class="muted">'+m.category+': '+m.items.slice(0,5).join(', ')+'</div>';
+                }
+            }
+            h+='</div>';
+            h+='</div>';
+        } else {
+            h+='<div style="padding:8px;background:var(--surface);border-radius:6px"><strong>✅ 未检测到明显 AI 模式</strong></div>';
+        }
+
+        h+='</div></div>';
         document.getElementById('detect-result').innerHTML=h;
     }catch(e){document.getElementById('detect-result').innerHTML='<p class="error">检测失败: '+e.message+'</p>';}
 }
@@ -81,36 +281,505 @@ async function step2_humanize(){
     }catch(e){clearInterval(_progressTimer);document.getElementById('col-diffs').innerHTML='<p class="error">改写失败: '+e.message+'</p>'; bar.style.display='none'; btn.disabled=false; btn.textContent='2.AI改写';}
 }
 
-function buildDiffView(){
-    const oParas=originalText.split(/\n\n+/); const nParas=optimizedText.split(/\n\n+/);
-    diffItems=[]; let added=0,changed=0,removed=0;
-    const maxP=Math.max(oParas.length,nParas.length);
-    for(let i=0;i<maxP;i++){
-        const op=i<oParas.length?oParas[i].trim():'',np=i<nParas.length?nParas[i].trim():'';
-        if(!op&&!np)continue;
-        if(op===np){diffItems.push({orig:op,opt:np,same:true,status:'same'});}
-        else{diffItems.push({orig:op,opt:np,same:false,status:'pending',index:i});if(!op)added++;else if(!np)removed++;else changed++;}
-        if(i<maxP-1)diffItems.push({orig:'\n\n',opt:'\n\n',same:true,status:'same',sep:true});
-    }
-    document.getElementById('merge-stats').textContent='变更:'+changed+' 新增:'+added+' 删除:'+removed;
-    let origHTML='';
-    for(const item of diffItems){if(item.sep){origHTML+='<br><br>';continue;}if(item.same)origHTML+=esc(item.orig).replace(/\n/g,'<br>');else origHTML+='<span class="hl-delete">'+esc(item.orig||'(空)').replace(/\n/g,'<br>')+'</span>';}
-    document.getElementById('col-original').innerHTML=origHTML||'<p class="muted">无内容</p>';
-    let diffHTML='';
-    for(const item of diffItems){if(item.same)continue;diffHTML+='<div class="diff-card status-'+item.status+'" id="card-'+item.index+'" onclick="toggleCard('+item.index+')"><div class="card-status">'+statusIcon(item.status)+'</div><div class="card-content"><div class="card-row orig-row"><span class="card-tag del">-</span>'+esc(item.orig||'(新增)')+'</div><div class="card-row opt-row"><span class="card-tag add">+</span>'+esc(item.opt||'(删除)')+'</div></div><div class="card-actions"><button class="btn btn-sm" onclick="event.stopPropagation();acceptCard('+item.index+')">采纳</button><button class="btn btn-sm" onclick="event.stopPropagation();rejectCard('+item.index+')">忽略</button><button class="btn btn-sm" onclick="event.stopPropagation();editCard('+item.index+')">编辑</button></div></div>';}
-    document.getElementById('col-diffs').innerHTML=diffHTML||'<p class="success">无差异</p>';
-    batchAccept();
-}
-function statusIcon(s){return s==='accepted'?'OK':(s==='rejected'?'NO':(s==='edited'?'ED':'..'));}
-function toggleCard(idx){const item=diffItems.find(d=>d.index===idx);if(!item||item.same)return;if(item.status==='pending'||item.status==='rejected')acceptCard(idx);else rejectCard(idx);}
-function acceptCard(idx){const item=diffItems.find(d=>d.index===idx);if(!item||item.same)return;item.status='accepted';updateCard(idx);updatePreview();}
-function rejectCard(idx){const item=diffItems.find(d=>d.index===idx);if(!item||item.same)return;item.status='rejected';updateCard(idx);updatePreview();}
-function editCard(idx){const item=diffItems.find(d=>d.index===idx);if(!item||item.same)return;const custom=prompt('手动编辑:',item.status==='accepted'?item.opt:item.orig);if(custom!==null){item.custom=custom;item.status='edited';updateCard(idx);updatePreview();}}
-function updateCard(idx){const item=diffItems.find(d=>d.index===idx);if(!item)return;const card=document.getElementById('card-'+idx);if(!card)return;card.className='diff-card status-'+item.status;card.querySelector('.card-status').textContent=statusIcon(item.status);}
-function updatePreview(){let r='';for(const item of diffItems){if(item.same||item.sep)r+=item.orig;else if(item.status==='accepted')r+=item.opt;else if(item.status==='edited')r+=(item.custom||item.orig);else r+=item.orig;}document.getElementById('col-final').value=r;}
-function batchAccept(){diffItems.forEach(d=>{if(!d.same)d.status='accepted';});for(const item of diffItems){if(!item.same)updateCard(item.index);}updatePreview();}
-function batchReject(){diffItems.forEach(d=>{if(!d.same)d.status='rejected';});for(const item of diffItems){if(!item.same)updateCard(item.index);}updatePreview();}
-function applyMerge(){const r=document.getElementById('col-final').value;if(!r)return;document.getElementById('text-input').value=r;document.getElementById('char-count').textContent=r.length+' 字';document.getElementById('merge-card').style.display='none';toast('合并完成','success');}
 function esc(s){return s.replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+// 降重模式说明
+const modeDescriptions={
+    'three_axe':{
+        name:'降重三板斧（推荐）',
+        desc:'融合500章实战经验的降重策略，三步走：',
+        steps:[
+            '🪓 <strong>口语化改造</strong>：把"小心翼翼地打开"换成"手有点抖，慢慢掀开"',
+            '👃 <strong>感官细节补全</strong>：每个场景加3种感官（听觉/嗅觉/触觉）',
+            '✂️ <strong>节奏打散</strong>：长段拆短、偶尔极短段、制造留白'
+        ],
+        best:'适合大多数场景，平衡效果和可读性'
+    },
+    'chaos':{
+        name:'混沌口语流',
+        desc:'极致降重策略，彻底改变文风：',
+        steps:[
+            '🌀 <strong>极致长句</strong>：用逗号连接，一段话只有一个句号',
+            '🔄 <strong>句式打乱</strong>：倒装句、省略句、"把"字句',
+            '🚫 <strong>禁止连接词</strong>：剥离"然而、因此、首先、其次"'
+        ],
+        best:'AI率很高时使用，效果最强但改动最大'
+    },
+    'standard':{
+        name:'标准改写',
+        desc:'平衡型改写策略：',
+        steps:[
+            '📝 <strong>反AI情节</strong>：加入意外和冗余',
+            '👁️ <strong>反AI描写</strong>：用感官替代客观描写',
+            '💬 <strong>反AI对话</strong>：让角色"不好好说话"'
+        ],
+        best:'通用场景，保持原文风格的同时降低AI率'
+    },
+    'light':{
+        name:'轻量修正',
+        desc:'最小改动策略：',
+        steps:[
+            '🗑️ <strong>删除AI词汇</strong>：缓缓、微微、心中涌起等',
+            '🔄 <strong>替换表达</strong>：用有语感的表达替代书面语',
+            '➕ <strong>适当口语化</strong>：加入少量语气词'
+        ],
+        best:'AI率已经不高，只需小幅调整'
+    },
+    'deep':{
+        name:'深度重写',
+        desc:'彻底重组策略：',
+        steps:[
+            '🔨 <strong>段落重组</strong>：重新编排段落结构',
+            '💬 <strong>对话重写</strong>：大幅调整对话内容',
+            '🎵 <strong>节奏重调</strong>：彻底改变叙述节奏'
+        ],
+        best:'AI率非常高或需要大幅改写时使用'
+    }
+};
+
+function showModeDesc(){
+    const mode=document.getElementById('reduce-mode').value;
+    const desc=modeDescriptions[mode];
+    const el=document.getElementById('mode-desc');
+    if(!desc){
+        el.style.display='none';
+        return;
+    }
+    let html=`<strong>${desc.name}</strong><br>`;
+    html+=`<span class="muted">${desc.desc}</span><br>`;
+    for(const step of desc.steps){
+        html+=`<div style="margin-top:4px">${step}</div>`;
+    }
+    html+=`<div style="margin-top:8px;color:var(--accent)">💡 ${desc.best}</div>`;
+    el.innerHTML=html;
+    el.style.display='block';
+}
+
+// 页面加载时显示默认模式说明
+document.addEventListener('DOMContentLoaded',showModeDesc);
+
+// 在线AI检测
+async function onlineDetect(platform){
+    const text=document.getElementById('text-input').value;
+    if(!text||text.length<50){alert('请输入至少50字的文本');return;}
+
+    const resultDiv=document.getElementById('online-detect-result');
+    resultDiv.style.display='block';
+    resultDiv.innerHTML='<p class="muted">获取检测指令...</p>';
+
+    try{
+        const resp=await fetch('/api/v1/anti-ai/online-detect',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({text:text,platform:platform})
+        });
+        const data=await resp.json();
+
+        if(data.error){
+            resultDiv.innerHTML=`<p class="error">${data.error}</p>`;
+            return;
+        }
+
+        const platformInfo=data.platform||{};
+        let html=`<div style="padding:12px;background:var(--surface);border-radius:6px">`;
+        html+=`<strong>${platformInfo.name||platform}</strong>`;
+        html+=`<span class="muted" style="margin-left:8px">${platformInfo.description||''}</span>`;
+        html+=`<br><span class="muted" style="font-size:12px">文本长度: ${data.text_length}字`;
+        if(data.chunks_count>1) html+=` (${data.chunks_count}段)`;
+        html+=`</span>`;
+        html+=`<br><a href="${platformInfo.url}" target="_blank" class="btn btn-sm" style="margin-top:8px;display:inline-block">打开检测平台</a>`;
+        html+=`</div>`;
+
+        // 显示分段文本
+        if(data.chunks&&data.chunks.length>0){
+            html+=`<div style="margin-top:12px">`;
+            html+=`<strong>检测文本（点击复制）:</strong>`;
+            for(const chunk of data.chunks){
+                const chunkId=`chunk-${chunk.index}`;
+                html+=`<div style="margin-top:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;cursor:pointer" onclick="copyChunk('${chunkId}')">`;
+                html+=`<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">第${chunk.index+1}段 (${chunk.length}字) - 点击复制</div>`;
+                html+=`<pre id="${chunkId}" style="white-space:pre-wrap;font-size:12px;max-height:200px;overflow-y:auto">${esc(chunk.text)}</pre>`;
+                html+=`</div>`;
+            }
+            html+=`</div>`;
+        }
+
+        // 记录结果表单
+        html+=`<div style="margin-top:12px;padding:12px;background:var(--surface);border-radius:6px">`;
+        html+=`<strong>📝 记录检测结果</strong>`;
+        html+=`<div style="display:flex;gap:8px;margin-top:8px;align-items:center">`;
+        html+=`<input type="number" id="record-ai-rate" placeholder="AI率%" min="0" max="100" style="width:80px;padding:4px;background:var(--bg);border:1px solid var(--border);border-radius:4px">`;
+        html+=`<button class="btn btn-sm" onclick="recordDetectResult('${platformInfo.name||platform}')">记录结果</button>`;
+        html+=`</div>`;
+        html+=`</div>`;
+
+        resultDiv.innerHTML=html;
+    }catch(e){
+        resultDiv.innerHTML=`<p class="error">获取失败: ${e.message}</p>`;
+    }
+}
+
+function copyChunk(chunkId){
+    const el=document.getElementById(chunkId);
+    if(el){
+        navigator.clipboard.writeText(el.textContent).then(()=>{
+            toast('已复制','success',1500);
+        }).catch(()=>{
+            // fallback
+            const range=document.createRange();
+            range.selectNode(el);
+            window.getSelection().removeAllRanges();
+            window.getSelection().addRange(range);
+            document.execCommand('copy');
+            toast('已复制','success',1500);
+        });
+    }
+}
+
+async function recordDetectResult(platform){
+    const aiRate=parseFloat(document.getElementById('record-ai-rate').value);
+    if(isNaN(aiRate)||aiRate<0||aiRate>100){alert('请输入有效的AI率(0-100)');return;}
+
+    // 获取当前项目ID（从URL或全局变量）
+    const urlParams=new URLSearchParams(window.location.search);
+    const projectId=urlParams.get('project_id')||'';
+
+    if(!projectId){
+        alert('请先选择项目');
+        return;
+    }
+
+    try{
+        const resp=await fetch('/api/v1/anti-ai/record-result',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({
+                project_id:projectId,
+                chapter_num:0, // 需要从上下文获取
+                ai_rate:aiRate,
+                platform:platform,
+                notes:''
+            })
+        });
+        const data=await resp.json();
+        if(data.recorded){
+            toast(`已记录: AI率 ${aiRate}% (${data.level})`, aiRate<40?'success':'warn');
+        }
+    }catch(e){
+        toast('记录失败','error');
+    }
+}
+
+// 智能降重（边改边显示）
+async function autoReduce(){
+    const text=document.getElementById('text-input').value;
+    if(!text||text.length<50){alert('请输入至少50字的文本');return;}
+
+    const btn=document.getElementById('btn-reduce');
+    btn.disabled=true;
+    const bar=document.getElementById('progress-bar');
+    const fill=document.getElementById('progress-fill');
+    bar.style.display='block';
+
+    let currentText=text;
+    let currentAiRate=100;
+    let round=0;
+    const maxRounds=5;
+    const targetAiRate=parseInt(document.getElementById('target-ai-rate').value)||30;
+    const history=[{text:text,aiRate:100,round:0,issues:[]}]; // 记录历史
+
+    // 先检测初始 AI 率
+    try{
+        const initResp=await fetch('/api/v1/anti-ai/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:currentText})});
+        const initData=await initResp.json();
+        currentAiRate=Math.round((1-initData.ai_score)*100);
+        history[0].aiRate=currentAiRate;
+        history[0].issues=initData.pattern_matches||[];
+
+        // 显示初始状态
+        updateLiveStatus(`初始AI率: ${currentAiRate}%`, currentAiRate);
+
+        if(currentAiRate<=targetAiRate){
+            btn.disabled=false;
+            btn.textContent='✅ 已达标';
+            setTimeout(()=>{btn.textContent='🔄 智能降重';},1500);
+            bar.style.display='none';
+            return;
+        }
+    }catch(e){}
+
+    while(currentAiRate>targetAiRate && round<maxRounds){
+        round++;
+        btn.textContent=`🔄 第${round}轮改写中...`;
+        fill.style.width=(round/maxRounds*100)+'%';
+
+        // 获取当前问题
+        let issues=[];
+        try{
+            const checkResp=await fetch('/api/v1/anti-ai/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:currentText})});
+            const checkData=await checkResp.json();
+            issues=checkData.pattern_matches||[];
+        }catch(e){}
+
+        // AI 改写（传入具体问题，针对性改写）
+        try{
+            const reduceMode=document.getElementById('reduce-mode').value;
+            const humanizeResp=await fetch('/api/v1/anti-ai/humanize',{
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({
+                    text:currentText,
+                    mode:reduceMode,
+                    detected_patterns:issues
+                })
+            });
+            const humanizeData=await humanizeResp.json();
+            if(humanizeData.content){
+                currentText=humanizeData.content;
+            }
+        }catch(e){
+            console.error('改写失败:',e);
+            break;
+        }
+
+        // 立即检测新的 AI 率
+        try{
+            const newCheckResp=await fetch('/api/v1/anti-ai/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:currentText})});
+            const newCheckData=await newCheckResp.json();
+            const newAiRate=Math.round((1-newCheckData.ai_score)*100);
+            const improvement=currentAiRate-newAiRate;
+
+            history.push({
+                text:currentText,
+                aiRate:newAiRate,
+                round:round,
+                issues:newCheckData.pattern_matches||[],
+                improvement:improvement
+            });
+
+            // 实时显示变化
+            updateLiveStatus(`第${round}轮: ${currentAiRate}% → ${newAiRate}% (↓${improvement}%)`, newAiRate);
+
+            currentAiRate=newAiRate;
+        }catch(e){
+            console.error('检测失败:',e);
+        }
+    }
+
+    // 更新结果
+    document.getElementById('text-input').value=currentText;
+    document.getElementById('char-count').textContent=currentText.length+' 字';
+    fill.style.width='100%';
+
+    btn.textContent='✅ 降重完成';
+    setTimeout(()=>{
+        btn.disabled=false;
+        btn.textContent='🔄 智能降重';
+        bar.style.display='none';
+    },2000);
+
+    // 显示最终结果和对比
+    step1_detect();
+    showDiffHistory(history, currentAiRate);
+    toast(`降重完成: ${round}轮改写，AI率降至${currentAiRate}%`, currentAiRate<=targetAiRate?'success':'warn');
+}
+
+// 实时显示降重状态
+function updateLiveStatus(message, aiRate){
+    const el=document.getElementById('detect-result');
+    const cls=aiRate<30?'ok':(aiRate<60?'warn':'bad');
+    el.innerHTML=`
+        <div style="text-align:center;padding:20px">
+            <div class="score-circle ${cls}" style="width:120px;height:120px;margin:0 auto 16px">
+                <span class="score-number" style="font-size:36px">${aiRate}%</span>
+            </div>
+            <p style="font-size:16px;font-weight:600">AI率</p>
+            <p style="color:var(--accent);margin-top:8px">${message}</p>
+        </div>
+    `;
+}
+
+// 显示改写历史对比（可交互）
+function showDiffHistory(history, finalAiRate){
+    if(history.length<2)return;
+
+    const mergeCard=document.getElementById('merge-card');
+    mergeCard.style.display='block';
+
+    originalText=history[0].text;
+    finalText=history[history.length-1].text;
+
+    // 显示进度摘要
+    let summaryHTML='<div style="padding:12px;background:var(--surface);border-radius:8px;margin-bottom:12px">';
+    summaryHTML+='<strong>📊 降重进度</strong><br>';
+    for(let i=0;i<history.length;i++){
+        const h=history[i];
+        if(i===0){
+            summaryHTML+=`<div style="margin-top:4px">初始: <span class="bad">${h.aiRate}%</span></div>`;
+        } else {
+            const arrow=h.improvement>0?'↓':'→';
+            const color=h.aiRate<30?'ok':(h.aiRate<60?'warn':'bad');
+            summaryHTML+=`<div>第${h.round}轮: <span class="${color}">${h.aiRate}%</span> <span class="muted">(${arrow}${Math.abs(h.improvement||0)}%)</span></div>`;
+        }
+    }
+    summaryHTML+=`<div style="margin-top:8px;font-weight:600">最终: <span class="${finalAiRate<30?'ok':'warn'}">${finalAiRate}%</span></div>`;
+    summaryHTML+='</div>';
+
+    // 计算差异
+    const origParas=originalText.split(/\n\n+/);
+    const finalParas=finalText.split(/\n\n+/);
+
+    diffItems=[];
+    const maxP=Math.max(origParas.length,finalParas.length);
+
+    for(let i=0;i<maxP;i++){
+        const op=i<origParas.length?origParas[i].trim():'';
+        const fp=i<finalParas.length?finalParas[i].trim():'';
+
+        if(!op&&!fp)continue;
+
+        const isChanged=op!==fp;
+        diffItems.push({
+            index:i,
+            orig:op,
+            final:fp,
+            isChanged:isChanged,
+            selected:isChanged, // 默认选中改写部分
+            edited:false,
+            customText:''
+        });
+    }
+
+    // 渲染原文（左列）
+    renderOriginal();
+
+    // 渲染差异卡片（中列）
+    renderDiffCards(summaryHTML);
+
+    // 渲染合并结果（右列）
+    updateMergeResult();
+
+    // 绑定全选/全不选按钮
+    document.getElementById('btn-select-all').onclick=()=>{diffItems.forEach(d=>{if(d.isChanged)d.selected=true;});renderDiffCards(summaryHTML);updateMergeResult();};
+    document.getElementById('btn-deselect-all').onclick=()=>{diffItems.forEach(d=>{d.selected=false;});renderDiffCards(summaryHTML);updateMergeResult();};
+}
+
+function renderOriginal(){
+    let html='';
+    diffItems.forEach((d,i)=>{
+        const divId=`orig-${i}`;
+        if(d.isChanged){
+            html+=`<div id="${divId}" class="card-row orig-row" style="cursor:pointer;padding:6px;margin:2px 0;background:rgba(244,67,54,0.08);border-radius:4px" onclick="scrollToCard(${i})">${esc(d.orig||'(空)')}</div>`;
+        } else {
+            html+=`<div id="${divId}" class="card-row" style="padding:6px;margin:2px 0;opacity:0.6">${esc(d.orig)}</div>`;
+        }
+    });
+    document.getElementById('col-original').innerHTML=html||'<p class="muted">无内容</p>';
+}
+
+function renderDiffCards(summaryHTML){
+    let html=summaryHTML;
+
+    diffItems.forEach((d,i)=>{
+        if(!d.isChanged){
+            // 未改变的段落
+            html+=`<div class="diff-card" id="card-${i}" style="border-color:var(--border);opacity:0.5;padding:8px;margin:4px 0">
+                <div class="card-content" style="flex:1">
+                    <div class="card-row" style="font-size:12px;color:var(--text-muted)">${esc(d.orig).substring(0,50)}...</div>
+                </div>
+            </div>`;
+        } else {
+            // 改变的段落（可选择）
+            const selectedClass=d.selected?'status-accepted':'status-rejected';
+            const borderColor=d.selected?'var(--ok)':'var(--bad)';
+            const statusIcon=d.selected?'✓':'✗';
+
+            html+=`<div class="diff-card ${selectedClass}" id="card-${i}" style="border-color:${borderColor};padding:8px;margin:4px 0;cursor:pointer" onclick="toggleCard(${i})">
+                <div style="flex-shrink:0;width:24px;text-align:center;font-size:16px">${statusIcon}</div>
+                <div class="card-content" style="flex:1">
+                    <div class="card-row orig-row" style="font-size:11px;margin-bottom:4px"><span class="card-tag del">原文</span>${esc(d.orig||'(空)').substring(0,80)}</div>
+                    <div class="card-row opt-row" style="font-size:11px"><span class="card-tag add">改写</span>${esc(d.final||'(空)').substring(0,80)}</div>
+                </div>
+                <div style="flex-shrink:0;display:flex;flex-direction:column;gap:4px">
+                    <button class="btn btn-sm" onclick="event.stopPropagation();editCard(${i})" style="font-size:10px">编辑</button>
+                </div>
+            </div>`;
+        }
+    });
+
+    document.getElementById('col-diffs').innerHTML=html;
+}
+
+function toggleCard(idx){
+    const item=diffItems.find(d=>d.index===idx);
+    if(!item||!item.isChanged)return;
+    item.selected=!item.selected;
+    renderDiffCards('');
+    updateMergeResult();
+    highlightOriginal(idx);
+}
+
+function editCard(idx){
+    const item=diffItems.find(d=>d.index===idx);
+    if(!item)return;
+    const currentText=item.edited?item.customText:item.final;
+    const custom=prompt('编辑改写内容:',currentText);
+    if(custom!==null){
+        item.customText=custom;
+        item.edited=true;
+        item.selected=true;
+        renderDiffCards('');
+        updateMergeResult();
+    }
+}
+
+function highlightOriginal(idx){
+    // 高亮原文对应位置
+    document.querySelectorAll('[id^="orig-"]').forEach(el=>el.style.background='');
+    const el=document.getElementById(`orig-${idx}`);
+    if(el){
+        el.style.background='rgba(76,175,80,0.15)';
+        el.scrollIntoView({behavior:'smooth',block:'nearest'});
+    }
+}
+
+function scrollToCard(idx){
+    const card=document.getElementById(`card-${idx}`);
+    if(card){
+        card.scrollIntoView({behavior:'smooth',block:'center'});
+        card.style.boxShadow='0 0 0 2px var(--accent)';
+        setTimeout(()=>{card.style.boxShadow='';},2000);
+    }
+}
+
+function updateMergeResult(){
+    let result='';
+    diffItems.forEach(d=>{
+        if(!d.isChanged){
+            result+=d.orig+'\n\n';
+        } else if(d.selected){
+            result+=(d.edited?d.customText:d.final)+'\n\n';
+        } else {
+            result+=d.orig+'\n\n';
+        }
+    });
+    document.getElementById('col-final').value=result.trim();
+
+    // 更新统计
+    const selectedCount=diffItems.filter(d=>d.isChanged&&d.selected).length;
+    const totalCount=diffItems.filter(d=>d.isChanged).length;
+    document.getElementById('merge-stats').textContent=`已选: ${selectedCount}/${totalCount} 段改写`;
+}
+
+function applyMerge(){
+    const result=document.getElementById('col-final').value;
+    if(!result)return;
+    document.getElementById('text-input').value=result;
+    document.getElementById('char-count').textContent=result.length+' 字';
+    document.getElementById('merge-card').style.display='none';
+    toast('已应用合并结果','success');
+    // 重新检测
+    setTimeout(()=>{step1_detect();},500);
+}
 </script>
 {% endblock %}

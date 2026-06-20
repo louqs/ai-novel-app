@@ -1,0 +1,23 @@
+name: 90s-database
+version: 1.0.0
+type: knowledge_pack
+title: 90年代资料库
+description: 完整的90年代物价、收入、住房、教育、耐用品数据，来自国家统计局和地方志
+author: AI Novel App
+tags:
+  - 90年代
+  - 物价
+  - 收入
+  - 资料库
+  - 年代文
+platforms:
+  - fanqie
+  - qidian
+genres:
+  - 乡土
+  - 年代
+created_at: '2026-06-21T06:00:00+00:00'
+updated_at: '2026-06-21T06:00:00+00:00'
+dependencies: []
+source_url: ''
+check_interval: monthly

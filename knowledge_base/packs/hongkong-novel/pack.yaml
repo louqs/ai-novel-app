@@ -1,0 +1,25 @@
+name: hongkong-novel
+version: 1.0.0
+type: knowledge_pack
+title: 港综小说写作技能库
+description: 融合港综正文写作、人设构建、大纲生成、AI降重、番茄优化、风格学习等完整创作技能
+author: AI Novel App
+tags:
+  - 港综
+  - 粤语
+  - 警匪
+  - 社团
+  - 降重
+  - 番茄优化
+platforms:
+  - fanqie
+  - qidian
+genres:
+  - 港综
+  - 都市
+  - 同人
+created_at: '2026-06-21T01:00:00+00:00'
+updated_at: '2026-06-21T01:00:00+00:00'
+dependencies: []
+source_url: ''
+check_interval: monthly

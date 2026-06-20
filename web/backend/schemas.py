@@ -137,7 +137,8 @@ class AntiAICheckRequest(BaseModel):
 
 class AntiAIHumanizeRequest(BaseModel):
     text: str = Field(..., min_length=1)
-    mode: str = Field(default="standard")  # light / standard / deep
+    mode: str = Field(default="standard")  # light / standard / deep / three_axe / chaos
+    target_word_count: int | None = Field(default=None)
 
 
 # =============================================================================

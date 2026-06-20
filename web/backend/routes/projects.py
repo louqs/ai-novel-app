@@ -127,3 +127,35 @@ async def delete_project(project_id: str):
     if proj_dir.exists():
         shutil.rmtree(proj_dir)
     return StatusResponse(message=f"项目 {project_id} 已删除")
+
+
+@router.get("/{project_id}/foreshadows/audit")
+async def audit_foreshadows(project_id: str):
+    """伏笔审计 — 检查未回收的伏笔."""
+    kernel = await get_kernel()
+    try:
+        content = await kernel.read_project_file(project_id, "foreshadows.json")
+        import json
+        data = json.loads(content)
+        entries = data.get("entries", {})
+
+        total = len(entries)
+        unpaid = [f for f in entries.values() if f.get("status") in ("planted", "building")]
+        paid = [f for f in entries.values() if f.get("status") == "paid"]
+
+        return {
+            "total": total,
+            "paid_count": len(paid),
+            "unpaid_count": len(unpaid),
+            "payoff_rate": round(len(paid) / total * 100, 1) if total > 0 else 0,
+            "unpaid": unpaid,
+        }
+    except FileNotFoundError:
+        return {
+            "total": 0,
+            "paid_count": 0,
+            "unpaid_count": 0,
+            "payoff_rate": 0,
+            "unpaid": [],
+            "note": "暂无伏笔数据",
+        }

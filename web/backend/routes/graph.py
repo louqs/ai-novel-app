@@ -13,6 +13,19 @@ router = APIRouter(prefix="/api/v1/graph", tags=["graph"])
 async def export_graph(project_id: str = ""):
     """导出全图数据（供前端可视化）。"""
     kernel = await get_kernel()
+
+    # 优先从项目目录读取 graph.json（章节生成时自动更新的）
+    if project_id:
+        try:
+            import json
+            raw = await kernel.read_project_file(project_id, "graph.json")
+            data = json.loads(raw)
+            if data.get("nodes"):
+                return data
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+    # 回退到图谱管理器
     try:
         gm = await kernel.get_plugin("graph-manager")
         data = await gm.instance.export_graph()

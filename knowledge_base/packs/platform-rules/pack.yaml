@@ -1,15 +1,17 @@
 author: AI Novel App
-created_at: '2026-06-19T12:03:57.573174+00:00'
+check_interval: weekly
+created_at: '2026-06-20T16:48:17.593288+00:00'
 dependencies: []
 description: 番茄/起点/晋江/七猫/豆瓣的投稿规范、算法机制、全勤规则
 genres: []
 name: platform-rules
 platforms: []
+source_url: ''
 tags:
 - 平台
 - 规则
 - 投稿
 title: 各平台规则合集
 type: knowledge_pack
-updated_at: '2026-06-19T12:03:57.573196+00:00'
+updated_at: '2026-06-20T16:48:17.593299+00:00'
 version: 0.1.0

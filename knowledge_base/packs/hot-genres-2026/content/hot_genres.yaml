@@ -1,70 +1,73 @@
-# 网文热门赛道数据
-
-> 更新: 2026
-
----
-
 genres:
-
-  - name: 都市脑洞
-    platform: fanqie
-    audience: 男频
+  - name: 无限流
+    platform: qidian
+    audience: 青少年至中年男性
     heat: ★★★★★
-    description: 现代背景 + 反常设定。流量最稳，7-14天出数据。
-    keywords: [系统, 穿越, 异能, 都市, 脑洞]
+    description: 结合了游戏、科幻等元素，主角在不同世界或维度间穿梭冒险的故事。
+    keywords: [异界, 冒险, 游戏]
+    competition: 中高
+    new_author_friendly: false
+    updated: "2026-06-19"
+  - name: 现代都市
+    platform: jinjiang
+    audience: 年轻女性
+    heat: ★★★★☆
+    description: 描述现代城市生活中的爱情、友情和职场斗争的故事。
+    keywords: [职场, 情感, 成长]
     competition: 高
     new_author_friendly: true
-
-  - name: 战神赘婿
+    updated: "2026-06-19"
+  - name: 古代言情
+    platform: jinjiang
+    audience: 女性读者
+    heat: ★★★★☆
+    description: 以古代为背景的爱情故事，往往包含宫廷争斗、江湖恩怨等元素。
+    keywords: [宫廷, 武侠, 爱情]
+    competition: 高
+    new_author_friendly: false
+    updated: "2026-06-19"
+  - name: 科幻未来
     platform: fanqie
-    audience: 男频
-    heat: ★★★★★
-    description: 身份反转 + 极致碾压。最稳定的爆款制造机。
-    keywords: [战神, 赘婿, 逆袭, 打脸, 身份反转]
-    competition: 极高
-    new_author_friendly: true
-
-  - name: 规则类怪谈
-    platform: fanqie
-    audience: 男频
-    heat: ★★★★
-    description: 诡异场景 + 智斗解密。竞争相对小，容易出圈。
-    keywords: [规则, 怪谈, 诡异, 智斗, 解密]
+    audience: 广泛
+    heat: ★★★★☆
+    description: 探索未来科技发展对人类社会的影响，包括太空探索、人工智能等主题。
+    keywords: [科技, 太空, AI]
     competition: 中
     new_author_friendly: true
-
-  - name: 萌宝甜宠
-    platform: fanqie
-    audience: 女频
-    heat: ★★★★★
-    description: 带球跑 + 霸总追妻。经典永不过时。
-    keywords: [萌宝, 甜宠, 霸总, 带球跑, 追妻]
-    competition: 极高
-    new_author_friendly: true
-
-  - name: 年代文+系统
-    platform: fanqie
-    audience: 女频
-    heat: ★★★★
-    description: 穿越七零/八零 + 靠系统发家致富。代入感强。
-    keywords: [年代, 穿越, 系统, 发家, 种田]
+    updated: "2026-06-19"
+  - name: 异能超自然
+    platform: qidian
+    audience: 青少年至成年男性
+    heat: ★★★★☆
+    description: 主角拥有特殊能力，在现实世界或者平行宇宙中解决各种问题的故事。
+    keywords: [超能力, 悬疑, 动作]
     competition: 中
     new_author_friendly: true
-
-  - name: 神豪流翻新
-    platform: fanqie
-    audience: 男频
-    heat: ★★★★
-    description: 灵气复苏/神明降临 + 神豪。短剧改编热门。
-    keywords: [神豪, 灵气复苏, 神明, 都市, 花钱]
-    competition: 高
+    updated: "2026-06-19"
+  - name: 历史穿越
+    platform: jinjiang
+    audience: 女性及部分男性历史爱好者
+    heat: ★★★☆☆
+    description: 主角穿越到过去的历史时期，通过个人努力改变命运甚至影响历史进程的故事。
+    keywords: [穿越, 历史, 改变命运]
+    competition: 中低
     new_author_friendly: true
-
-  - name: 重生复仇
+    updated: "2026-06-19"
+  - name: 轻小说
     platform: fanqie
-    audience: 女频
-    heat: ★★★★
-    description: 前世被虐 → 重生归来 → 手撕渣男/绿茶。
-    keywords: [重生, 复仇, 虐渣, 爽文, 女强]
-    competition: 高
+    audience: 学生群体
+    heat: ★★★☆☆
+    description: 采用轻松幽默的语言风格讲述校园生活、奇幻冒险等内容的小说类型。
+    keywords: [校园, 幽默, 奇幻]
+    competition: 低
     new_author_friendly: true
+    updated: "2026-06-19"
+  - name: 文化传承
+    platform: jinjiang
+    audience: 对传统文化感兴趣的读者
+    heat: ★★★☆☆
+    description: 以中国传统文化为基础，讲述与之相关的家族秘密、传统技艺的传承等故事。
+    keywords: [文化, 家族, 传承]
+    competition: 低
+    new_author_friendly: true
+    updated: "2026-06-19"

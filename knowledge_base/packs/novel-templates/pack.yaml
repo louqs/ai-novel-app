@@ -1,0 +1,23 @@
+name: novel-templates
+version: 1.0.0
+type: knowledge_pack
+title: 长篇小说项目模板
+description: 完整的长篇小说项目管理系统，包含伏笔评分、战力等级、亲密度追踪、8条铁律等
+author: AI Novel App
+tags:
+  - 项目模板
+  - 伏笔追踪
+  - 战力系统
+  - 角色关系
+  - 写作铁律
+platforms:
+  - fanqie
+  - qidian
+  - jinjiang
+genres:
+  - 通用
+created_at: '2026-06-20T23:00:00+00:00'
+updated_at: '2026-06-20T23:00:00+00:00'
+dependencies: []
+source_url: ''
+check_interval: monthly

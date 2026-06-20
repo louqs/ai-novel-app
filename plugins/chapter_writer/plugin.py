@@ -863,7 +863,230 @@ class ChapterWriterPlugin:
             ),
             content=content,
         )
+
+        # 自动提取伏笔（异步，不阻塞返回）
+        project_id = context.get("project_id", "")
+        if project_id and not revision_instructions:
+            try:
+                await self._extract_and_save_foreshadows(project_id, content, ch_num)
+            except Exception as exc:
+                logger.warning("伏笔提取失败", chapter=ch_num, error=str(exc))
+
+            # 自动更新人物关系图谱
+            try:
+                await self._update_graph_from_chapter(project_id, content, ch_num)
+            except Exception as exc:
+                logger.warning("图谱更新失败", chapter=ch_num, error=str(exc))
+
         return chapter
+
+    async def _extract_and_save_foreshadows(
+        self,
+        project_id: str,
+        chapter_content: str,
+        chapter_num: int,
+    ) -> None:
+        """提取伏笔并保存到文件."""
+        try:
+            fm = await self._kernel.get_plugin("foreshadow-manager")
+        except Exception:
+            return  # 伏笔管理器未加载
+
+        # 读取已有伏笔
+        existing = {}
+        try:
+            raw = await self._kernel.read_project_file(project_id, "foreshadows.json")
+            existing = json.loads(raw)
+        except (FileNotFoundError, json.JSONDecodeError):
+            existing = {"project_id": project_id, "entries": {}}
+
+        # 提取新伏笔
+        result = await fm.instance.extract_foreshadows(
+            chapter_content, chapter_num, existing
+        )
+
+        entries = existing.get("entries", {})
+
+        # 添加新伏笔
+        for fs in result.get("new_foreshadows", []):
+            fs_id = f"fs_{uuid.uuid4().hex[:8]}"
+            entries[fs_id] = {
+                "foreshadow_id": fs_id,
+                "type": fs.get("type", "plot_twist"),
+                "description": fs.get("description", ""),
+                "planted_chapter": chapter_num,
+                "involved_characters": fs.get("involved_characters", []),
+                "involved_items": fs.get("involved_items", []),
+                "status": "planted",
+                "priority": fs.get("priority", 1),
+                "building_chapters": [chapter_num],
+            }
+
+        # 更新推进的伏笔
+        for fs_id in result.get("advanced", []):
+            if fs_id in entries:
+                bc = entries[fs_id].get("building_chapters", [])
+                if chapter_num not in bc:
+                    bc.append(chapter_num)
+                entries[fs_id]["building_chapters"] = bc
+                if entries[fs_id].get("status") == "planted":
+                    entries[fs_id]["status"] = "building"
+
+        # 标记回收的伏笔
+        for fs in result.get("paid", []):
+            fs_id = fs.get("foreshadow_id", "")
+            if fs_id in entries:
+                entries[fs_id]["status"] = "paid"
+                entries[fs_id]["payoff_chapter"] = chapter_num
+                entries[fs_id]["payoff_description"] = fs.get("payoff_description", "")
+
+        # 保存
+        existing["entries"] = entries
+        await self._kernel.write_project_file(
+            project_id, "foreshadows.json",
+            json.dumps(existing, ensure_ascii=False, indent=2)
+        )
+
+        logger.info(
+            "伏笔提取完成",
+            chapter=chapter_num,
+            new=len(result.get("new_foreshadows", [])),
+            advanced=len(result.get("advanced", [])),
+            paid=len(result.get("paid", [])),
+        )
+
+    async def _update_graph_from_chapter(
+        self,
+        project_id: str,
+        chapter_content: str,
+        chapter_num: int,
+    ) -> None:
+        """从章节内容中提取人物和关系，更新图谱."""
+        try:
+            gm = await self._kernel.get_plugin("graph-manager")
+        except Exception:
+            return  # 图谱管理器未加载
+
+        # 用 LLM 提取人物和关系
+        prompt = f"""分析以下章节，提取出现的人物和他们之间的关系。
+
+章节内容:
+{chapter_content[:4000]}
+
+返回 JSON:
+```json
+{{
+  "characters": [
+    {{
+      "name": "人物名",
+      "aliases": ["别名1", "别名2"],
+      "role": "protagonist|antagonist|supporting|minor",
+      "description": "简短描述"
+    }}
+  ],
+  "relationships": [
+    {{
+      "source": "人物A",
+      "target": "人物B",
+      "type": "ALLY|ENEMY|FAMILY|MASTER_DISCIPLE|RIVAL|SUBORDINATE|ROMANTIC",
+      "description": "关系描述"
+    }}
+  ]
+}}
+```
+
+注意: 只提取本章明确出现的人物和关系。"""
+
+        try:
+            result = await self._kernel.call_llm(
+                messages=[{"role": "user", "content": prompt}],
+                tier="budget",
+                max_tokens=2048,
+                temperature=0.2,
+            )
+
+            import re
+            content = result["content"]
+            # 尝试解析 JSON
+            match = re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
+            if match:
+                data = json.loads(match.group(1))
+            else:
+                data = json.loads(content)
+
+            # 更新图谱
+            chars = data.get("characters", [])
+            rels = data.get("relationships", [])
+
+            if chars or rels:
+                # 读取已有图谱数据
+                existing_graph = {"nodes": [], "edges": []}
+                try:
+                    raw = await self._kernel.read_project_file(project_id, "graph.json")
+                    existing_graph = json.loads(raw)
+                except (FileNotFoundError, json.JSONDecodeError):
+                    pass
+
+                existing_nodes = {n["id"]: n for n in existing_graph.get("nodes", [])}
+                existing_edges = {e["id"]: e for e in existing_graph.get("edges", [])}
+
+                # 添加新人物
+                for char in chars:
+                    char_name = char.get("name", "")
+                    if not char_name:
+                        continue
+                    char_id = f"char_{char_name}"
+                    if char_id not in existing_nodes:
+                        existing_nodes[char_id] = {
+                            "id": char_id,
+                            "label": char_name,
+                            "group": "Character",
+                            "properties": {
+                                "name": char_name,
+                                "role": char.get("role", "minor"),
+                                "description": char.get("description", ""),
+                                "first_appearance_chapter": chapter_num,
+                            }
+                        }
+
+                # 添加新关系
+                for rel in rels:
+                    source_name = rel.get("source", "")
+                    target_name = rel.get("target", "")
+                    if not source_name or not target_name:
+                        continue
+                    source_id = f"char_{source_name}"
+                    target_id = f"char_{target_name}"
+                    rel_id = f"rel_{source_id}_{target_id}_{rel.get('type', 'ALLY')}"
+                    if rel_id not in existing_edges:
+                        existing_edges[rel_id] = {
+                            "id": rel_id,
+                            "source": source_id,
+                            "target": target_id,
+                            "type": rel.get("type", "ALLY"),
+                            "description": rel.get("description", ""),
+                        }
+
+                # 保存图谱
+                graph_data = {
+                    "project_id": project_id,
+                    "nodes": list(existing_nodes.values()),
+                    "edges": list(existing_edges.values()),
+                }
+                await self._kernel.write_project_file(
+                    project_id, "graph.json",
+                    json.dumps(graph_data, ensure_ascii=False, indent=2)
+                )
+
+                logger.info(
+                    "图谱更新完成",
+                    chapter=chapter_num,
+                    new_chars=len(chars),
+                    new_rels=len(rels),
+                )
+
+        except Exception as exc:
+            logger.warning("图谱提取失败", chapter=chapter_num, error=str(exc))
 
     async def revise_chapter(
         self,
@@ -1203,7 +1426,7 @@ words: {len(content)}
         content = chapter.content if hasattr(chapter, "content") else str(chapter)
 
         matches = detector.detect(content)
-        initial_score = detector.calculate_ai_score(matches)
+        initial_score = detector.calculate_ai_score(matches, text=content)
         current_score = initial_score
         current_content = content
 
@@ -1274,7 +1497,7 @@ words: {len(content)}
 
             # 重新检测
             matches = detector.detect(current_content)
-            current_score = detector.calculate_ai_score(matches)
+            current_score = detector.calculate_ai_score(matches, text=current_content)
 
             patterns_history.append(
                 {

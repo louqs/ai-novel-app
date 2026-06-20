@@ -1,0 +1,28 @@
+name: novel-writing-skills
+version: 1.0.0
+type: knowledge_pack
+title: 长篇小说写作技能库
+description: 融合六幕体系、四章桥段结构、装逼明暗线、书名创作、换地图技术等完整写作方法论
+author: AI Novel App
+tags:
+  - 六幕体系
+  - 桥段结构
+  - 装逼技巧
+  - 书名创作
+  - 换地图
+  - 驱动力公式
+  - 代入感
+platforms:
+  - fanqie
+  - qidian
+  - jinjiang
+genres:
+  - 通用
+  - 玄幻
+  - 都市
+  - 历史
+created_at: '2026-06-21T00:00:00+00:00'
+updated_at: '2026-06-21T00:00:00+00:00'
+dependencies: []
+source_url: ''
+check_interval: monthly

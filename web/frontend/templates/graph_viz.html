@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}人物关系图谱{% endblock %}{% block nav_graph %}active{% endblock %}{% block page_title %}人物关系图谱{% endblock %}
-{% block head %}<script src="https://d3js.org/d3.v7.min.js"></script>{% endblock %}
+{% block head %}<script src="/static/d3.v7.min.js"></script>{% endblock %}
 
 {% block content %}
 <div class="page-header"><h1>🕸️ 人物关系图谱</h1><p class="subtitle">D3.js 力导向图 — 拖拽节点、滚轮缩放</p></div>
@@ -19,7 +19,8 @@ async function loadFullGraph(){
     const container=document.getElementById('full-graph');
     container.innerHTML='<p class="muted" style="text-align:center;padding-top:35vh">加载图谱数据...</p>';
     try {
-        const resp=await fetch('/api/v1/graph/export?project_id='+ (new URLSearchParams(window.location.search)).get('project_id')||'');
+        const projectId = new URLSearchParams(window.location.search).get('project_id') || '';
+        const resp=await fetch('/api/v1/graph/export?project_id=' + projectId);
         const data=await resp.json();
         if(!data.nodes||data.nodes.length===0){ container.innerHTML='<p class="muted" style="text-align:center;padding-top:35vh">暂无图谱数据。<br>请先在项目中构建世界观，或运行 novel graph build</p>'; return; }
         drawFullGraph(container, data);
@@ -39,7 +40,9 @@ function drawFullGraph(container, data){
 
     const color=d3.scaleOrdinal(d3.schemeCategory10);
     const nodes=data.nodes.map(n=>({...n}));
-    const edges=data.edges.map(e=>({source:e.source,target:e.target,type:e.type}));
+    const nodeIds = new Set(nodes.map(n=>n.id));
+    // 过滤掉引用不存在节点的边
+    const edges=data.edges.filter(e=>nodeIds.has(e.source) && nodeIds.has(e.target)).map(e=>({source:e.source,target:e.target,type:e.type}));
 
     const sim=d3.forceSimulation(nodes)
         .force('link',d3.forceLink(edges).id(d=>d.id).distance(80))
@@ -52,9 +55,17 @@ function drawFullGraph(container, data){
         .attr('stroke','#555').attr('stroke-width',d=>d.type==='ENEMY'?2:1)
         .attr('stroke-dasharray',d=>d.type==='ENEMY'?'5,3':null);
 
+    // 关系类型中文映射
+    const relTypeMap={
+        'ALLY':'盟友','ENEMY':'敌人','FAMILY':'家人','MASTER_DISCIPLE':'师徒',
+        'RIVAL':'对手','SUBORDINATE':'从属','ROMANTIC':'恋人','ACQUAINTANCE':'相识',
+        'BELONGS_TO':'属于','LOCATED_AT':'位于','POSSESSES':'拥有','PARTICIPATES_IN':'参与',
+        'TRIGGERS':'触发','KNOWS_ABOUT':'知晓','CONFLICTS_WITH':'冲突','HAS_LEVEL':'等级'
+    };
+
     // 边标签
     const edgeLabel=g.append('g').selectAll('text').data(edges).join('text')
-        .text(d=>d.type).attr('font-size',8).attr('fill','#666');
+        .text(d=>relTypeMap[d.type]||d.type).attr('font-size',8).attr('fill','#666');
 
     // 节点
     const node=g.append('g').selectAll('circle').data(nodes).join('circle')

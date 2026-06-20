@@ -128,16 +128,23 @@ async def check_anti_ai(data: AntiAICheckRequest):
     try:
         plugin = await kernel.get_plugin("anti-ai-detection")
         if plugin.instance and hasattr(plugin.instance, "detect"):
-            return await plugin.instance.detect(data.text)
+            result = await plugin.instance.detect(data.text)
+            # 确保包含新增的检测维度
+            if "vocabulary_diversity" not in result:
+                result["vocabulary_diversity"] = plugin.instance._detector._check_vocabulary_diversity(data.text)
+            if "sentence_patterns" not in result:
+                result["sentence_patterns"] = plugin.instance._detector._check_sentence_patterns(data.text)
+            return result
     except Exception:
         pass
 
     from plugins.anti_ai_detection.pattern_detector import AIPatternDetector
     detector = AIPatternDetector()
     matches = detector.detect(data.text)
-    score = detector.calculate_ai_score(matches)
+    score = detector.calculate_ai_score(matches, text=data.text)
     sentence = detector.detect_uniform_sentences(data.text)
     ending = detector.detect_generic_ending(data.text)
+    not_xy = detector.detect_not_x_but_y(data.text)
 
     return {
         "ai_score": round(score, 3),
@@ -148,6 +155,9 @@ async def check_anti_ai(data: AntiAICheckRequest):
         ],
         "sentence_uniformity": sentence,
         "generic_ending": ending,
+        "not_x_but_y": not_xy,
+        "vocabulary_diversity": detector._check_vocabulary_diversity(data.text),
+        "sentence_patterns": detector._check_sentence_patterns(data.text),
     }
 
 
@@ -169,7 +179,12 @@ async def humanize_text(data: AntiAIHumanizeRequest):
     match_dicts = [{"category": m.category, "matched_items": m.matched_items} for m in matches]
 
     try:
-        result = await engine.humanize(data.text, mode=data.mode, detected_patterns=match_dicts)
+        result = await engine.humanize(
+            data.text,
+            mode=data.mode,
+            detected_patterns=match_dicts,
+            target_word_count=data.target_word_count,
+        )
         if result and result != data.text:
             return {"content": result, "mode": data.mode, "changed": True}
         else:
@@ -188,6 +203,66 @@ async def list_ai_patterns():
         return {"patterns": list(data.get("patterns", {}).keys())}
     except Exception:
         return {"patterns": []}
+
+
+# =============================================================================
+# 在线AI检测
+# =============================================================================
+
+
+@router.post("/api/v1/anti-ai/online-detect", response_model=dict)
+async def get_online_detect_instructions(data: dict):
+    """获取在线检测指令（供用户手动粘贴到检测平台）."""
+    from plugins.anti_ai_detection.online_detector import OnlineDetector
+
+    text = data.get("text", "")
+    platform = data.get("platform", "tianyan")
+
+    if not text.strip():
+        return {"error": "文本为空"}
+
+    detector = OnlineDetector()
+    return detector.get_detect_instructions(text, platform)
+
+
+@router.post("/api/v1/anti-ai/record-result", response_model=dict)
+async def record_detect_result(data: dict):
+    """记录在线检测结果."""
+    from plugins.anti_ai_detection.online_detector import OnlineDetector
+
+    project_id = data.get("project_id", "")
+    chapter_num = data.get("chapter_num", 0)
+    ai_rate = data.get("ai_rate", 0)
+    platform = data.get("platform", "天眼AI")
+    notes = data.get("notes", "")
+
+    if not project_id:
+        return {"error": "需要提供 project_id"}
+
+    kernel = await get_kernel()
+    project_dir = kernel.get_project_dir(project_id)
+
+    detector = OnlineDetector(project_dir=project_dir)
+    result = detector.record_result(project_id, chapter_num, ai_rate, platform, notes)
+
+    return {
+        "recorded": True,
+        "ai_rate": result.ai_rate,
+        "level": result.level_label,
+        "platform": result.platform,
+    }
+
+
+@router.get("/api/v1/anti-ai/results/{project_id}", response_model=dict)
+async def get_detect_results(project_id: str):
+    """获取检测结果汇总."""
+    from plugins.anti_ai_detection.online_detector import OnlineDetector
+
+    kernel = await get_kernel()
+    project_dir = kernel.get_project_dir(project_id)
+
+    detector = OnlineDetector(project_dir=project_dir)
+    return detector.get_results_summary(project_id)
 
 
 # =============================================================================

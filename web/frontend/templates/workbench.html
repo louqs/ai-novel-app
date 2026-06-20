@@ -2,7 +2,7 @@
 {% block title %}创作工作台{% endblock %}{% block nav_workbench %}active{% endblock %}{% block page_title %}创作工作台{% endblock %}
 
 {% block head %}
-<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="/static/d3.v7.min.js"></script>
 {% endblock %}
 
 {% block content %}
@@ -269,8 +269,9 @@ async function runLiveCheck(){
     try {
         const resp=await fetch('/api/v1/anti-ai/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:content})});
         const d=await resp.json();
-        const cls=d.ai_score>0.7?'ok':(d.ai_score>0.4?'warn':'bad');
-        el.innerHTML=`AI评分: <span class="${cls}" style="font-weight:600">${(d.ai_score*100).toFixed(0)}</span>`;
+        const aiRate=Math.round((1-d.ai_score)*100);
+        const cls=aiRate<30?'ok':(aiRate<60?'warn':'bad');
+        el.innerHTML=`AI率: <span class="${cls}" style="font-weight:600">${aiRate}%</span>`;
     } catch(e){}
 }
 
@@ -283,10 +284,20 @@ async function checkLive(){
     try {
         const resp=await fetch('/api/v1/anti-ai/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:content})});
         const d=await resp.json();
-        let html=`<div class="score-display"><div class="score-circle ${d.ai_score>0.7?'ok':(d.ai_score>0.4?'warn':'bad')}"><span class="score-number">${(d.ai_score*100).toFixed(0)}</span></div></div>`;
+        const aiRate=Math.round((1-d.ai_score)*100);
+        const cls=aiRate<30?'ok':(aiRate<60?'warn':'bad');
+        const label=aiRate<30?'✅ 人类写作':(aiRate<60?'⚠️ 有AI痕迹':'❌ AI痕迹明显');
+
+        let html=`<div class="score-display"><div class="score-circle ${cls}"><span class="score-number">${aiRate}%</span></div><p style="margin-top:4px;font-size:12px">AI率</p><p style="font-size:11px">${label}</p></div>`;
+
         if(d.pattern_matches&&d.pattern_matches.length){
-            html+=d.pattern_matches.map(m=>`<div class="pattern-item"><span class="severity severity-${m.severity}">${m.severity}</span> ${m.category}: ${m.count}处</div>`).join('');
-        } else { html+='<p class="success">未检测到AI痕迹</p>'; }
+            html+='<div style="margin-top:8px">';
+            html+=d.pattern_matches.map(m=>{
+                const sevColor=m.severity==='high'?'bad':(m.severity==='medium'?'warn':'muted');
+                return `<div class="pattern-item"><span class="${sevColor}">${m.severity.toUpperCase()}</span> ${m.category}: ${m.count}处</div>`;
+            }).join('');
+            html+='</div>';
+        }
         resDiv.innerHTML=html;
     } catch(e){ resDiv.innerHTML='<p class="error">检测失败</p>'; }
 }
@@ -309,6 +320,13 @@ function drawGraph(container, data){
     const svg=d3.select(container).append('svg').attr('width',W).attr('height',H);
     const color=d3.scaleOrdinal(d3.schemeCategory10);
 
+    // 关系类型中文映射
+    const relTypeMap={
+        'ALLY':'盟友','ENEMY':'敌人','FAMILY':'家人','MASTER_DISCIPLE':'师徒',
+        'RIVAL':'对手','SUBORDINATE':'从属','ROMANTIC':'恋人','ACQUAINTANCE':'相识',
+        'BELONGS_TO':'属于','LOCATED_AT':'位于','POSSESSES':'拥有','PARTICIPATES_IN':'参与'
+    };
+
     const nodes=data.nodes.map(n=>({...n}));
     const edges=data.edges.map(e=>({source:e.source,target:e.target,type:e.type}));
 
@@ -325,6 +343,11 @@ function drawGraph(container, data){
               .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y;}).on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
     const label=svg.append('g').selectAll('text').data(nodes).join('text')
         .text(d=>d.label||d.id).attr('font-size',10).attr('fill','#aaa').attr('dx',10).attr('dy',4);
+
+    // 边标签（中文）
+    svg.append('g').selectAll('text').data(edges).join('text')
+        .text(d=>relTypeMap[d.type]||d.type).attr('font-size',8).attr('fill','#666')
+        .attr('x',d=>(d.source.x+d.target.x)/2).attr('y',d=>(d.source.y+d.target.y)/2);
 
     sim.on('tick',()=>{link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
         node.attr('cx',d=>d.x).attr('cy',d=>d.y);label.attr('x',d=>d.x).attr('y',d=>d.y);});
@@ -473,11 +496,42 @@ function showChapterDetail(num){
 }
 async function loadCharactersMini(){
     try {
+        // 先从 characters.json 读取
         const resp=await fetch(`/api/v1/projects/${currentProjectId}/characters`);
         const data=await resp.json();
-        const chars=data.characters||{};
-        const names=Object.values(chars).map(c=>c.name||'?').slice(0,8);
-        document.getElementById('characters-mini').innerHTML=names.length?names.map(n=>`<span class="tag">${n}</span>`).join(''):'<p class="muted">暂无</p>';
+        let chars=data.characters||{};
+
+        // 如果 characters.json 为空，从图谱数据读取
+        if(Object.keys(chars).length===0){
+            const graphResp=await fetch(`/api/v1/graph/export?project_id=${currentProjectId}`);
+            const graphData=await graphResp.json();
+            const nodes=graphData.nodes||[];
+            nodes.forEach(n=>{
+                if(n.group==='Character'){
+                    chars[n.id]={
+                        name:n.label||n.properties?.name||'?',
+                        personality_tags:n.properties?.personality_tags||[],
+                        core_motivation:n.properties?.core_motivation||''
+                    };
+                }
+            });
+        }
+
+        const charList=Object.values(chars).slice(0,8);
+        if(charList.length===0){
+            document.getElementById('characters-mini').innerHTML='<p class="muted">暂无</p>';
+            return;
+        }
+        document.getElementById('characters-mini').innerHTML=charList.map(c=>{
+            const name=c.name||'?';
+            const tags=(c.personality_tags||[]).slice(0,3).join('、');
+            const motivation=c.core_motivation||'';
+            return `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+                <strong>${name}</strong>
+                ${tags?`<span class="muted" style="font-size:11px"> · ${tags}</span>`:''}
+                ${motivation?`<div class="muted" style="font-size:11px;margin-top:2px">${motivation.slice(0,40)}</div>`:''}
+            </div>`;
+        }).join('');
     } catch(e){}
 }
 

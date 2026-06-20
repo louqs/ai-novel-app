@@ -1,10 +1,12 @@
 author: AI Novel App
-created_at: '2026-06-19T12:03:57.592982+00:00'
+check_interval: weekly
+created_at: '2026-06-20T16:48:17.660365+00:00'
 dependencies: []
 description: 四川/重庆/云南/贵州方言——高频口语、角色塑造、适当融入增强地域感
 genres: []
 name: southwest-dialect
 platforms: []
+source_url: ''
 tags:
 - 方言
 - 川渝
@@ -13,5 +15,5 @@ tags:
 - 角色塑造
 title: 云贵川渝方言素材库
 type: knowledge_pack
-updated_at: '2026-06-19T12:03:57.592995+00:00'
+updated_at: '2026-06-20T16:48:17.660376+00:00'
 version: 0.1.0

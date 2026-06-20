@@ -11,7 +11,12 @@
       "Bash(.venv/Scripts/python -m ruff check --fix plugins/chapter_writer/plugin.py plugins/quality_evaluator/plugin.py tests/test_expert_modes.py)",
       "Bash(.venv/Scripts/python -m pytest tests/test_expert_modes.py tests/test_fanqie_expert.py -v)",
       "Bash(.venv/Scripts/python -m pytest tests/test_model_registry.py -v)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(curl -s \"http://localhost:8080/static/d3.v7.min.js\")",
+      "Bash(curl *)",
+      "Bash(python -m json.tool)",
+      "Bash(.venv/Scripts/python -m pytest tests/test_quality.py -v)",
+      "Bash(awk 'NR>=56 && NR<=65' web/frontend/templates/anti_ai.html)"
     ]
   }
 }

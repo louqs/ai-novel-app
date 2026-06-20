@@ -36,6 +36,8 @@ PACK_SCHEMA = {
     "tags": [], "platforms": [], "genres": [],
     "created_at": "", "updated_at": "",
     "dependencies": [],
+    "source_url": "",  # 在线源 URL（可选）
+    "check_interval": "weekly",  # 检查间隔：daily/weekly/monthly/never
 }
 
 
@@ -283,7 +285,7 @@ class KnowledgePackMarket:
 
     def _builtin_catalog(self) -> list[dict]:
         """内置示例知识包目录。"""
-        return [
+        catalog = [
             {
                 "name": "fanqie-writing-tips",
                 "title": "番茄小说写作技巧包",
@@ -291,16 +293,13 @@ class KnowledgePackMarket:
                 "tags": ["写作技巧", "番茄", "新手"],
                 "platforms": ["fanqie"],
                 "genres": ["通用"],
-                "updated": "2026-06-19",
                 "sources": {
                     "knowledge_base/writing_tips/fanqie_tips.md": "fanqie_tips.md",
                     "knowledge_base/writing_tips/common_tips.md": "common_tips.md",
-
                 },
             },
             {
                 "name": "anti-ai-patterns",
-                "updated": "2026-06-19",
                 "title": "反AI模式特征库",
                 "description": "10类AI写作模式特征，用于检测和消除文本中的AI痕迹",
                 "tags": ["反AI", "质量", "检测"],
@@ -312,7 +311,6 @@ class KnowledgePackMarket:
             },
             {
                 "name": "hot-genres-2026",
-                "updated": "2026-06-19",
                 "title": "2026热门赛道分析",
                 "description": "番茄/起点/晋江最新热门赛道数据与竞争分析",
                 "tags": ["赛道", "市场", "选题"],
@@ -347,7 +345,6 @@ class KnowledgePackMarket:
             },
         {
             "name": "southwest-dialect",
-            "updated": "2026-06-19",
             "title": "云贵川渝方言素材库",
             "description": "四川/重庆/云南/贵州方言——高频口语、角色塑造、适当融入增强地域感",
             "tags": ["方言", "川渝", "云南", "贵州", "角色塑造"],
@@ -356,3 +353,28 @@ class KnowledgePackMarket:
             "sources": {"knowledge_base/writing_tips/southwest_dialect.md": "southwest_dialect.md"},
         },
         ]
+
+        # 动态读取每个知识包的实际更新时间
+        for item in catalog:
+            pack_name = item.get("name", "")
+            pack_yaml = self._packs_dir / pack_name / "pack.yaml"
+            if pack_yaml.exists():
+                try:
+                    meta = yaml.safe_load(pack_yaml.read_text(encoding="utf-8"))
+                    item["updated_at"] = meta.get("updated_at", "")
+                    item["version"] = meta.get("version", "0.1.0")
+                except Exception:
+                    pass
+            else:
+                # 如果知识包未安装，使用源文件的修改时间
+                sources = item.get("sources", {})
+                if sources:
+                    first_source = list(sources.keys())[0]
+                    source_path = Path(first_source)
+                    if source_path.exists():
+                        import os
+                        mtime = os.path.getmtime(source_path)
+                        from datetime import datetime
+                        item["updated_at"] = datetime.fromtimestamp(mtime).isoformat()
+
+        return catalog
