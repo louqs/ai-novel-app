@@ -1,0 +1,129 @@
+"""项目管理 API."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, HTTPException
+from starlette.status import HTTP_404_NOT_FOUND
+
+from models.project import Platform, ProjectMeta
+from web.backend.dependencies import get_kernel
+from web.backend.schemas import ProjectCreate, ProjectResponse, ProjectUpdate, StatusResponse
+
+router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
+
+
+@router.post("", response_model=dict)
+async def create_project(data: ProjectCreate):
+    """创建新项目."""
+    kernel = await get_kernel()
+    project_id = f"proj_{uuid.uuid4().hex[:12]}"
+
+    meta = ProjectMeta(
+        project_id=project_id,
+        title=data.title,
+        platform=Platform(data.platform) if data.platform in [e.value for e in Platform] else Platform.FANQIE,
+        length=data.length,
+        genre_tags=data.genre_tags,
+        one_liner=data.one_liner,
+        target_words_per_chapter=data.target_words_per_chapter,
+    )
+
+    # 数据库存储
+    if kernel.db:
+        await kernel.db.create_project(project_id, meta.model_dump())
+    # 文件也存一份（兼容）
+    await kernel.write_project_file(project_id, "project.json", meta.model_dump_json(indent=2))
+    await kernel.context().set(f"project:{project_id}", "meta", meta.model_dump())
+    await kernel.context().set(f"project:{project_id}", "platform", data.platform)
+
+    return {"project_id": project_id, "title": data.title, "status": "created"}
+
+
+@router.get("", response_model=list[dict])
+async def list_projects():
+    """列出所有项目."""
+    kernel = await get_kernel()
+
+    # 优先从数据库读取
+    if kernel.db:
+        try:
+            return await kernel.db.list_projects()
+        except Exception:
+            pass
+
+    # 降级：从文件系统读取
+    data_dir = kernel._data_dir
+    projects = []
+    if data_dir.exists():
+        for proj_dir in data_dir.iterdir():
+            if proj_dir.is_dir() and proj_dir.name.startswith("proj_"):
+                try:
+                    import json
+                    meta_raw = await kernel.read_project_file(proj_dir.name, "project.json")
+                    meta = json.loads(meta_raw)
+                    projects.append({
+                        "id": meta.get("project_id", proj_dir.name),
+                        "project_id": meta.get("project_id", proj_dir.name),
+                        "title": meta.get("title", ""),
+                        "platform": meta.get("platform", ""),
+                        "status": meta.get("status", "planning"),
+                        "current_chapter": meta.get("current_chapter", 0),
+                    })
+                except Exception:
+                    pass
+    return projects
+
+
+@router.get("/{project_id}", response_model=dict)
+async def get_project(project_id: str):
+    """获取项目详情."""
+    kernel = await get_kernel()
+    # 优先数据库
+    if kernel.db:
+        proj = await kernel.db.get_project(project_id)
+        if proj: return proj
+    # 降级文件
+    try:
+        meta_raw = await kernel.read_project_file(project_id, "project.json")
+        import json
+        return json.loads(meta_raw)
+    except FileNotFoundError:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="项目不存在")
+
+
+@router.patch("/{project_id}", response_model=dict)
+async def update_project(project_id: str, data: ProjectUpdate):
+    """更新项目."""
+    kernel = await get_kernel()
+    try:
+        meta_raw = await kernel.read_project_file(project_id, "project.json")
+        import json
+        meta = json.loads(meta_raw)
+    except FileNotFoundError:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="项目不存在")
+
+    for key, value in data.model_dump(exclude_unset=True).items():
+        if value is not None:
+            meta[key] = value
+
+    meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await kernel.write_project_file(project_id, "project.json", json.dumps(meta, indent=2, ensure_ascii=False))
+    return meta
+
+
+@router.delete("/{project_id}", response_model=StatusResponse)
+async def delete_project(project_id: str):
+    """删除项目."""
+    kernel = await get_kernel()
+    # 删数据库
+    if kernel.db:
+        await kernel.db.delete_project(project_id)
+    # 删文件
+    import shutil
+    proj_dir = kernel.get_project_dir(project_id)
+    if proj_dir.exists():
+        shutil.rmtree(proj_dir)
+    return StatusResponse(message=f"项目 {project_id} 已删除")

@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}人物关系图谱{% endblock %}{% block nav_graph %}active{% endblock %}{% block page_title %}人物关系图谱{% endblock %}
+{% block head %}<script src="https://d3js.org/d3.v7.min.js"></script>{% endblock %}
+
+{% block content %}
+<div class="page-header"><h1>🕸️ 人物关系图谱</h1><p class="subtitle">D3.js 力导向图 — 拖拽节点、滚轮缩放</p></div>
+<div class="card" style="padding:0;overflow:hidden">
+    <div id="full-graph" style="width:100%;height:70vh;background:var(--bg)"></div>
+</div>
+<div class="card">
+    <div class="section-header"><h2>图例</h2><button class="btn btn-sm" onclick="loadFullGraph()">🔄 刷新</button></div>
+    <div id="legend" class="plugin-tags"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadFullGraph(){
+    const container=document.getElementById('full-graph');
+    container.innerHTML='<p class="muted" style="text-align:center;padding-top:35vh">加载图谱数据...</p>';
+    try {
+        const resp=await fetch('/api/v1/graph/export?project_id='+ (new URLSearchParams(window.location.search)).get('project_id')||'');
+        const data=await resp.json();
+        if(!data.nodes||data.nodes.length===0){ container.innerHTML='<p class="muted" style="text-align:center;padding-top:35vh">暂无图谱数据。<br>请先在项目中构建世界观，或运行 novel graph build</p>'; return; }
+        drawFullGraph(container, data);
+        // Legend
+        const groups=[...new Set(data.nodes.map(n=>n.group||'Entity'))];
+        document.getElementById('legend').innerHTML=groups.map(g=>`<span class="tag">${g}</span>`).join('');
+        toast(`已加载 ${data.nodes.length} 节点, ${data.edges.length} 边`, 'success');
+    } catch(e){ container.innerHTML='<p class="error">加载失败</p>'; }
+}
+
+function drawFullGraph(container, data){
+    container.innerHTML='';
+    const W=container.clientWidth, H=container.clientHeight;
+    const svg=d3.select(container).append('svg').attr('width',W).attr('height',H);
+    const g=svg.append('g');
+    svg.call(d3.zoom().scaleExtent([0.2,4]).on('zoom',e=>g.attr('transform',e.transform)));
+
+    const color=d3.scaleOrdinal(d3.schemeCategory10);
+    const nodes=data.nodes.map(n=>({...n}));
+    const edges=data.edges.map(e=>({source:e.source,target:e.target,type:e.type}));
+
+    const sim=d3.forceSimulation(nodes)
+        .force('link',d3.forceLink(edges).id(d=>d.id).distance(80))
+        .force('charge',d3.forceManyBody().strength(-300))
+        .force('center',d3.forceCenter(W/2,H/2))
+        .force('collision',d3.forceCollide().radius(15));
+
+    // 边
+    const link=g.append('g').selectAll('line').data(edges).join('line')
+        .attr('stroke','#555').attr('stroke-width',d=>d.type==='ENEMY'?2:1)
+        .attr('stroke-dasharray',d=>d.type==='ENEMY'?'5,3':null);
+
+    // 边标签
+    const edgeLabel=g.append('g').selectAll('text').data(edges).join('text')
+        .text(d=>d.type).attr('font-size',8).attr('fill','#666');
+
+    // 节点
+    const node=g.append('g').selectAll('circle').data(nodes).join('circle')
+        .attr('r',d=>d.label&&d.label.length>5?12:8)
+        .attr('fill',d=>color(d.group))
+        .attr('stroke','#222').attr('stroke-width',1.5)
+        .call(d3.drag().on('start',dragStart).on('drag',dragged).on('end',dragEnd));
+
+    // 标签
+    const label=g.append('g').selectAll('text').data(nodes).join('text')
+        .text(d=>d.label||d.id).attr('font-size',11).attr('fill','#ddd').attr('dx',12).attr('dy',4);
+
+    // 悬停高亮
+    node.on('mouseenter',function(e,d){
+        d3.select(this).attr('stroke','#7c5cfc').attr('stroke-width',3);
+        link.style('opacity',l=>(l.source.id===d.id||l.target.id===d.id)?1:0.1);
+    }).on('mouseleave',function(){
+        d3.select(this).attr('stroke','#222').attr('stroke-width',1.5);
+        link.style('opacity',1);
+    });
+
+    function dragStart(e,d){ if(!e.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; }
+    function dragged(e,d){ d.fx=e.x; d.fy=e.y; }
+    function dragEnd(e,d){ if(!e.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }
+
+    sim.on('tick',()=>{
+        link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+        edgeLabel.attr('x',d=>(d.source.x+d.target.x)/2).attr('y',d=>(d.source.y+d.target.y)/2);
+        node.attr('cx',d=>d.x).attr('cy',d=>d.y);
+        label.attr('x',d=>d.x).attr('y',d=>d.y);
+    });
+}
+
+loadFullGraph();
+</script>
+{% endblock %}

@@ -1,0 +1,15 @@
+author: AI Novel App
+created_at: '2026-06-19T12:03:57.545302+00:00'
+dependencies: []
+description: 10类AI写作模式特征，用于检测和消除文本中的AI痕迹
+genres: []
+name: anti-ai-patterns
+platforms: []
+tags:
+- 反AI
+- 质量
+- 检测
+title: 反AI模式特征库
+type: knowledge_pack
+updated_at: '2026-06-19T12:03:57.545313+00:00'
+version: 0.1.0

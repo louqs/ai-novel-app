@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% block title %}写作教练{% endblock %}{% block page_title %}AI 写作教练{% endblock %}
+{% block content %}
+<div class="page-header"><h1>📊 AI 写作教练</h1><p class="subtitle">分析 → 逐条对比 → 勾选采纳 → 实时预览 → 应用到章节</p></div>
+<div class="card">
+    <select id="project-select" onchange="loadCoach(this.value)" class="wb-select"><option value="">选择项目...</option></select>
+    <div id="coach-result" style="margin-top:10px"><p class="muted">选择项目后自动分析</p></div>
+<div id="coach-progress" style="display:none;margin-top:4px;height:4px;background:var(--border);border-radius:2px"><div id="coach-progress-fill" style="height:100%;width:0;background:var(--accent);border-radius:2px;transition:width 0.3s"></div></div>
+</div>
+<div class="card" id="merge-card" style="display:none">
+    <div class="section-header">
+        <h2>合并对比 — 第<span id="merge-ch-num"></span>章</h2>
+        <div>
+            <button class="btn btn-sm" onclick="batchAccept()">全部采纳</button>
+            <button class="btn btn-sm" onclick="batchReject()">全部忽略</button>
+            <span class="muted" id="merge-stats" style="margin-left:8px"></span>
+        </div>
+    </div>
+    <div class="merge-three-col">
+        <div class="merge-col orig-col"><div class="col-header">📄 原始版本</div><div id="col-original" class="col-body"></div></div>
+        <div class="merge-col diff-col"><div class="col-header">🔧 AI 建议修改 (点击卡片勾选)</div><div id="col-diffs" class="col-body"></div></div>
+        <div class="merge-col final-col"><div class="col-header">✅ 最终版本 (实时预览)</div><textarea id="col-final" class="col-body-edit" placeholder="选择左侧差异卡片..."></textarea></div>
+    </div>
+    <div style="margin-top:12px">
+        <button class="btn btn-primary" onclick="applyMerge()">💾 覆盖到第<span id="merge-ch-num2"></span>章</button>
+        <button class="btn" onclick="document.getElementById('merge-card').style.display='none'">取消</button>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let currentPid=sessionStorage.getItem('coach_pid')||'', currentChNum=0, originalText='', optimizedText='', diffItems=[], mergeState={};
+
+(async function init(){
+    try {
+        const resp=await fetch('/api/v1/projects'); const projects=await resp.json();
+        const sel=document.getElementById('project-select');
+        projects.forEach(p=>{sel.innerHTML+=`<option value="${p.project_id}">${p.title}</option>`});
+        const params=new URLSearchParams(window.location.search);
+        if(params.get('project_id')){sel.value=params.get('project_id');loadCoach(params.get('project_id'));}
+    }catch(e){}
+})();
+
+let _coachTimer=null;
+async function loadCoach(pid){
+    if(!pid)return; currentPid=pid; sessionStorage.setItem('coach_pid',pid);
+    const div=document.getElementById('coach-result'); div.innerHTML='<p class="muted">分析中...</p>';
+    const bar=document.getElementById('coach-progress'); bar.style.display='block';
+    const fill=document.getElementById('coach-progress-fill'); fill.style.width='0';
+    let pct=0; _coachTimer=setInterval(()=>{pct=Math.min(pct+Math.random()*5,85);fill.style.width=pct+'%';},400);
+    try {
+        const resp=await fetch('/api/v1/projects/'+pid+'/coach',{method:'POST'}); const d=await resp.json();
+        if(d.error){div.innerHTML='<p class="error">'+d.error+'</p>';return;}
+        let h=`<h3>评分: ${(d.avg_score||0).toFixed(2)} | ${d.total_chapters||0}章 | ${(d.total_words||0)}字</h3><p>${d.summary||''}</p><hr>`;
+        for(const ch of(d.chapter_analyses||[])){
+            h+=`<div class="model-card"><div class="model-info"><strong>第${ch.chapter}章</strong> ${ch.score.toFixed(2)} (${ch.words}字)`;
+            for(const s of(ch.suggestions||[]).slice(0,2)) h+=`<div class="muted">[${s.area}] ${s.issue}</div>`;
+            h+=`</div><button class="btn btn-sm" onclick="optimizeChapter(${ch.chapter})">✨ 优化对比</button></div>`;
+        }
+        div.innerHTML=h;
+    }catch(e){div.innerHTML='<p class="error">分析失败</p>';}
+}
+
+let _optTimer=null;
+async function optimizeChapter(chNum){
+    currentChNum=chNum;
+    document.getElementById('merge-ch-num').textContent=chNum;
+    document.getElementById('merge-ch-num2').textContent=chNum;
+    const mc=document.getElementById('merge-card'); mc.style.display='block';
+    document.getElementById('col-diffs').innerHTML='<p class="muted">加载原文并AI改写中...</p>';
+    const bar=document.getElementById('coach-progress'); bar.style.display='block';
+    const fill=document.getElementById('coach-progress-fill'); fill.style.width='0';
+    let pct=0; _optTimer=setInterval(()=>{pct=Math.min(pct+Math.random()*4,80);fill.style.width=pct+'%';},500);
+    try {
+        const chResp=await fetch(`/api/v1/projects/${currentPid}/chapters/${chNum}`);
+        originalText=(await chResp.json()).content||'';
+        const hResp=await fetch('/api/v1/anti-ai/humanize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:originalText,mode:'standard'})});
+        optimizedText=(await hResp.json()).content||originalText;
+        buildDiffView();
+    }catch(e){alert('加载失败: '+e);}
+}
+
+function buildDiffView(){
+    // Paragraph-aware diff: split by double newlines
+    const oParas=originalText.split(/\n\n+/);
+    const nParas=optimizedText.split(/\n\n+/);
+    diffItems=[]; let added=0, changed=0, removed=0;
+
+    // Build diff items - one per paragraph pair
+    const maxP=Math.max(oParas.length, nParas.length);
+    for(let i=0;i<maxP;i++){
+        const op=i<oParas.length?oParas[i].trim():'';
+        const np=i<nParas.length?nParas[i].trim():'';
+        if(!op&&!np) continue;
+        if(op===np){
+            diffItems.push({orig:op, opt:np, same:true, status:'same', paragraph:true});
+        } else {
+            diffItems.push({orig:op, opt:np, same:false, status:'pending', index:i});
+            if(!op) added++;
+            else if(!np) removed++;
+            else changed++;
+        }
+        // Add paragraph separator between paras
+        if(i<maxP-1) diffItems.push({orig:'\n\n', opt:'\n\n', same:true, status:'same', sep:true});
+    }
+
+    document.getElementById('merge-stats').textContent='变更:'+changed+' 新增:'+added+' 删除:'+removed+' | 勾选=采纳';
+
+    // Left: original with highlights
+    let origHTML='';
+    for(const item of diffItems){
+        if(item.sep){ origHTML+='<br><br>'; continue; }
+        if(item.same) origHTML+=esc(item.orig).replace(/\n/g,'<br>');
+        else origHTML+='<span class="hl-delete">'+esc(item.orig||'(空)').replace(/\n/g,'<br>')+'</span>';
+    }
+    document.getElementById('col-original').innerHTML=origHTML||'<p class="muted">无内容</p>';
+
+    // Middle: diff cards
+    let diffHTML='';
+    for(const item of diffItems){
+        if(item.same) continue;
+        diffHTML+='<div class="diff-card status-'+item.status+'" id="card-'+item.index+'" onclick="toggleCard('+item.index+')">'+
+            '<div class="card-status">'+statusIcon(item.status)+'</div>'+
+            '<div class="card-content">'+
+                '<div class="card-row orig-row"><span class="card-tag del">-</span>'+esc(item.orig||'(新增)')+'</div>'+
+                '<div class="card-row opt-row"><span class="card-tag add">+</span>'+esc(item.opt||'(删除)')+'</div>'+
+            '</div>'+
+            '<div class="card-actions">'+
+                '<button class="btn btn-sm" onclick="event.stopPropagation();acceptCard('+item.index+')" title="采纳AI建议">✅</button>'+
+                '<button class="btn btn-sm" onclick="event.stopPropagation();rejectCard('+item.index+')" title="保留原文">↩️</button>'+
+                '<button class="btn btn-sm" onclick="event.stopPropagation();editCard('+item.index+')" title="手动编辑">✏️</button>'+
+            '</div>'+
+        '</div>';
+    }
+    document.getElementById('col-diffs').innerHTML=diffHTML||'<p class="success">无差异，原文已符合标准</p>';
+
+    // Initial: accept all by default
+    batchAccept();
+
+    // Initial: accept all by default
+    batchAccept();
+}
+
+function statusIcon(s){ return s==='accepted'?'✅':(s==='rejected'?'↩️':(s==='edited'?'✏️':'⬜')); }
+
+function toggleCard(idx){
+    const item=diffItems.find(d=>d.index===idx); if(!item||item.same) return;
+    if(item.status==='pending'||item.status==='rejected') acceptCard(idx);
+    else rejectCard(idx);
+}
+
+function acceptCard(idx){
+    const item=diffItems.find(d=>d.index===idx); if(!item||item.same) return;
+    item.status='accepted';
+    updateCard(idx); updatePreview();
+}
+
+function rejectCard(idx){
+    const item=diffItems.find(d=>d.index===idx); if(!item||item.same) return;
+    item.status='rejected';
+    updateCard(idx); updatePreview();
+}
+
+function editCard(idx){
+    const item=diffItems.find(d=>d.index===idx); if(!item||item.same) return;
+    const custom=prompt('手动编辑此句:', item.status==='accepted'?item.opt:item.orig);
+    if(custom!==null){ item.custom=custom; item.status='edited'; updateCard(idx); updatePreview(); }
+}
+
+function updateCard(idx){
+    const item=diffItems.find(d=>d.index===idx); if(!item) return;
+    const card=document.getElementById('card-'+idx); if(!card) return;
+    card.className='diff-card status-'+item.status;
+    card.querySelector('.card-status').textContent=statusIcon(item.status);
+}
+
+function updatePreview(){
+    let result='';
+    for(const item of diffItems){
+        let part='';
+        if(item.same) part=item.orig;
+        else if(item.status==='accepted') part=item.opt;
+        else if(item.status==='edited') part=(item.custom||item.orig);
+        else part=item.orig;
+        result+=part;
+    }
+    document.getElementById('col-final').value=result;
+}
+
+function batchAccept(){ diffItems.forEach(d=>{if(!d.same) d.status='accepted';}); rebuildCards(); }
+function batchReject(){ diffItems.forEach(d=>{if(!d.same) d.status='rejected';}); rebuildCards(); }
+
+function rebuildCards(){
+    for(const item of diffItems){
+        if(!item.same) updateCard(item.index);
+    }
+    updatePreview();
+}
+
+async function applyMerge(){
+    const r=document.getElementById('col-final').value;
+    if(!r) return;
+    try {
+        await fetch(`/api/v1/projects/${currentPid}/chapters/${currentChNum}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:r})});
+        toast('已应用到第'+currentChNum+'章','success');
+        document.getElementById('merge-card').style.display='none';
+    }catch(e){toast('保存失败','error');}
+}
+
+function esc(s){return s.replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+</script>
+<style>
+.merge-three-col{display:flex;gap:8px;min-height:400px}
+.merge-col{flex:1;display:flex;flex-direction:column;min-width:0}
+.orig-col{flex:1.2}.diff-col{flex:1.5}.final-col{flex:1.3}
+.col-header{font-weight:600;font-size:12px;padding:6px 8px;background:var(--surface2);border-radius:4px 4px 0 0;text-align:center}
+.col-body{padding:8px;background:var(--bg);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;overflow-y:auto;max-height:500px;font-size:13px;line-height:1.8}
+.col-body-edit{width:100%;height:500px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;padding:8px;font-size:13px;font-family:inherit;resize:vertical}
+.hl-delete{background:rgba(244,67,54,0.15);text-decoration:line-through;padding:2px 0}
+.diff-card{display:flex;align-items:flex-start;gap:8px;padding:8px;margin:4px 0;background:var(--surface);border:2px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.2s}
+.diff-card:hover{border-color:var(--text-muted)}
+.diff-card.status-accepted{border-color:var(--ok);background:rgba(76,175,80,0.06)}
+.diff-card.status-rejected{border-color:var(--bad);opacity:0.5}
+.diff-card.status-edited{border-color:var(--accent)}
+.card-status{font-size:18px;flex-shrink:0}
+.card-content{flex:1;min-width:0}
+.card-row{padding:2px 4px;border-radius:3px;font-size:12px;line-height:1.6;margin:2px 0}
+.orig-row{background:rgba(244,67,54,0.05)}.opt-row{background:rgba(76,175,80,0.05)}
+.card-tag{font-weight:700;margin-right:4px}.card-tag.del{color:#f44336}.card-tag.add{color:#4caf50}
+.card-actions{display:flex;gap:3px;flex-shrink:0}
+</style>
+{% endblock %}

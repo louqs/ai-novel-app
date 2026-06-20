@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}知识包市场{% endblock %}{% block page_title %}知识包市场{% endblock %}
+{% block content %}
+<div class="page-header"><h1>📦 知识包市场</h1><p class="subtitle">安装写作技巧包到 <code>knowledge_base/packs/</code>，重启不丢，自动索引供AI检索</p></div>
+<div class="card"><div class="section-header"><h2>内置知识包</h2><button class="btn btn-sm" onclick="refreshPacks()">刷新索引</button></div><div id="catalog-list"><p class="muted">加载中...</p></div></div>
+<div class="card"><h2>已安装</h2><div id="local-list"><p class="muted">加载中...</p></div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function loadAll(){
+    try {
+        const cr=await fetch('/api/v1/packs/catalog'); const cd=await cr.json();
+        const lr=await fetch('/api/v1/packs/local'); const ld=await lr.json();
+        const installed=new Set((ld||[]).map(p=>p.name));
+        document.getElementById('catalog-list').innerHTML=(cd||[]).map(p=>`<div class="model-card"><div class="model-info"><strong>${p.title}</strong><span class="muted" style="font-size:10px;margin-left:8px">更新: ${p.updated||'未知'}</span><div class="muted">${p.description||''}</div></div><div class="model-actions">${installed.has(p.name)?'<span class="success">✅ 已安装</span>':'<button class="btn btn-sm" onclick="installPack(\''+p.name+'\')">安装</button>'}</div></div>`).join('');
+        document.getElementById('local-list').innerHTML=(ld||[]).map(p=>`<div class="model-card"><div class="model-info"><strong>${p.title||p.name}</strong><div class="muted">${p.file_count||0} 个文件</div></div><div class="model-actions"><button class="btn btn-sm" onclick="uninstallPack(\''+p.name+'\')">卸载</button></div></div>`).join('')||'<p class="muted">暂无</p>';
+    } catch(e){}
+}
+async function installPack(name){
+    try {
+        await fetch('/api/v1/packs/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:name})});
+        toast('已安装', 'success'); async function refreshPacks(){
+    toast('正在重建索引...','info');
+    for(const p of (await (await fetch('/api/v1/packs/catalog')).json())){
+        try { await fetch('/api/v1/packs/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:p.name})}); }
+        catch(e){}
+    }
+    toast('索引已刷新','success'); loadAll();
+}
+loadAll();
+    } catch(e){ toast('安装失败', 'error'); }
+}
+async function uninstallPack(name){
+    try {
+        await fetch('/api/v1/packs/uninstall/'+name,{method:'POST'});
+        toast('已卸载', 'success'); async function refreshPacks(){
+    toast('正在重建索引...','info');
+    for(const p of (await (await fetch('/api/v1/packs/catalog')).json())){
+        try { await fetch('/api/v1/packs/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:p.name})}); }
+        catch(e){}
+    }
+    toast('索引已刷新','success'); loadAll();
+}
+loadAll();
+    } catch(e){ toast('卸载失败', 'error'); }
+}
+async function refreshPacks(){
+    toast('正在重建索引...','info');
+    for(const p of (await (await fetch('/api/v1/packs/catalog')).json())){
+        try { await fetch('/api/v1/packs/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:p.name})}); }
+        catch(e){}
+    }
+    toast('索引已刷新','success'); loadAll();
+}
+loadAll();
+</script>
+{% endblock %}

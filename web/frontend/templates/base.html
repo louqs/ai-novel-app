@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}AI 小说生成智能体{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <!-- Toast 通知 -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <div class="app-layout">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <a href="/" class="logo">📖 AI小说智能体</a>
+            </div>
+            <nav class="sidebar-nav">
+                <div class="nav-section"><span class="nav-label">创作</span>
+                    <a href="/" class="nav-item {% block nav_projects %}{% endblock %}">📚 项目列表</a>
+                    <a href="/workbench" class="nav-item {% block nav_workbench %}{% endblock %}" id="nav-workbench">✍️ 创作工作台</a>
+                    <a href="/skills" class="nav-item">🧠 Skill Builder</a>
+                    <a href="/packs" class="nav-item">📦 知识包</a>
+                    <a href="/cover" class="nav-item">🎨 封面生成</a>
+                    <a href="/graph-viz" class="nav-item {% block nav_graph %}{% endblock %}">🕸️ 人物关系图</a>
+                </div>
+                <div class="nav-section"><span class="nav-label">工具</span>
+                    <a href="/anti-ai" class="nav-item {% block nav_antiai %}{% endblock %}">🔍 反AI检测</a>
+                    <a href="/coach" class="nav-item">📊 写作教练</a>
+                    <a href="/stats" class="nav-item">📈 数据看板</a>
+                    <a href="/models" class="nav-item {% block nav_models %}{% endblock %}">⚙️ 模型管理</a>
+                </div>
+                <div class="nav-section"><span class="nav-label">系统</span>
+                    <div class="nav-item health-indicator" id="health-dot">🟢 运行中</div>
+                    <div class="nav-item" style="font-size:11px;color:var(--text-muted)">
+                    </div>
+                </div>
+            </nav>
+        </aside>
+
+        <div class="main-content">
+            <header class="topbar">
+                <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
+                <div class="topbar-title">{% block page_title %}AI 小说生成智能体{% endblock %}</div>
+                <div class="topbar-actions">
+                    <span id="auto-save-status" class="muted" style="font-size:11px"></span>
+                    <span id="status-badge" class="badge badge-ok">v0.3.0</span>
+                </div>
+            </header>
+            <div class="content-area">
+                {% block content %}{% endblock %}
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // ===== Toast 通知系统 =====
+    function toast(msg, type='info', duration=3000) {
+        const c = document.getElementById('toast-container');
+        const el = document.createElement('div');
+        el.className = `toast toast-${type}`;
+        el.textContent = msg;
+        c.appendChild(el);
+        setTimeout(() => { el.style.opacity='0'; setTimeout(() => el.remove(), 300); }, duration);
+    }
+
+    // ===== 自动保存 (供 workbench 使用) =====
+    let _autoSaveTimer = null;
+    let _autoSaveEnabled = false;
+    function enableAutoSave(fn, delay=3000) {
+        _autoSaveEnabled = true;
+        document.addEventListener('keydown', e => {
+            if (e.ctrlKey && e.key === 's') { e.preventDefault(); fn(); toast('已保存', 'success', 1500); }
+        });
+        return (content) => {
+            if (!_autoSaveEnabled) return;
+            clearTimeout(_autoSaveTimer);
+            _autoSaveTimer = setTimeout(() => { fn(); document.getElementById('auto-save-status').textContent = '已自动保存'; setTimeout(() => { const el = document.getElementById('auto-save-status'); if(el) el.textContent=''; }, 2000); }, delay);
+        };
+    }
+
+    // ===== Sidebar =====
+    function toggleSidebar() { document.getElementById('sidebar').classList.toggle('collapsed'); }
+
+    // ===== Health =====
+    fetch('/api/v1/admin/health').then(r=>r.json()).then(d=>{
+        if(d.status!=='healthy') document.getElementById('health-dot').innerHTML='🔴 异常';
+    }).catch(()=>{ document.getElementById('health-dot').innerHTML='🔴 离线'; });
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

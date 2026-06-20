@@ -1,0 +1,236 @@
+# =============================================================================
+# AI 小说生成智能体 — 默认配置
+# 环境变量前缀: NOVEL_ (如 NOVEL_LLM_DEFAULT_TIER=premium)
+#
+# API Key 通过环境变量设置（不要在配置文件中写明文）：
+#   DEEPSEEK_API_KEY=sk-xxx
+#   QWEN_API_KEY=sk-xxx
+#   ZHIPU_API_KEY=xxx
+#   KIMI_API_KEY=sk-xxx
+#   ANTHROPIC_API_KEY=sk-ant-xxx
+#   OPENAI_API_KEY=sk-xxx
+# =============================================================================
+
+app:
+  name: ai-novel-app
+  version: "0.3.0"
+  env: development
+  debug: true
+  data_dir: D:/ai-output-novel
+
+# ---------------------------------------------------------------------------
+# 数据库 — SQLite (零配置，始终可用)
+# ---------------------------------------------------------------------------
+database:
+  type: sqlite
+  path: data/novel.db
+  max_concurrent_chapters: 1
+
+# ---------------------------------------------------------------------------
+# LLM — 多 Provider 配置
+# ---------------------------------------------------------------------------
+llm:
+  # 默认使用的 tier (premium / standard / budget)
+  default_tier: standard
+
+  # 每个 tier 当前使用的 provider 和 model
+  # 可通过 API 运行时热切换，无需重启
+  tiers:
+    premium:
+      provider: qwen
+      model: qwen-max
+      max_tokens: 8192
+      temperature: 0.8
+      description: "正文撰写、文本润色"
+    standard:
+      provider: qwen
+      model: qwen-max
+      max_tokens: 4096
+      temperature: 0.7
+      description: "大纲规划、审查、风格"
+    budget:
+      provider: qwen
+      model: qwen-max
+      max_tokens: 2048
+      temperature: 0.3
+      description: "元数据提取、RAG索引"
+
+  # 重试设置
+  request_timeout: 120
+  max_retries: 3
+  retry_base_delay: 2.0
+
+  # Prompt 缓存 (仅 Claude)
+  prompt_cache:
+    enabled: false
+    max_cached_tokens: 5000
+
+# ---------------------------------------------------------------------------
+# Provider 定义 — 用户可自由添加/修改
+# ---------------------------------------------------------------------------
+providers:
+  # DeepSeek (默认)
+  - name: deepseek
+    type: openai_compatible
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    default_model: deepseek-chat
+    models:
+      - deepseek-chat
+      - deepseek-reasoner
+
+  # 通义千问 (Qwen) / 阿里云百炼
+  - name: qwen
+    type: openai_compatible
+    base_url: https://dashscope.aliyuncs.com/compatible-mode
+    api_key_env: QWEN_API_KEY
+    default_model: qwen-plus
+    models:
+      - qwen-turbo
+      - qwen-plus
+      - qwen-max
+      - qwen-max-long-context
+
+  # 智谱 (GLM)
+  - name: zhipu
+    type: openai_compatible
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key_env: ZHIPU_API_KEY
+    default_model: glm-4-flash
+    models:
+      - glm-4-flash
+      - glm-4
+      - glm-4-plus
+
+  # 月之暗面 (Kimi)
+  - name: kimi
+    type: openai_compatible
+    base_url: https://api.moonshot.cn/v1
+    api_key_env: KIMI_API_KEY
+    default_model: moonshot-v1-8k
+    models:
+      - moonshot-v1-8k
+      - moonshot-v1-32k
+      - moonshot-v1-128k
+
+  # 百川
+  - name: baichuan
+    type: openai_compatible
+    base_url: https://api.baichuan-ai.com/v1
+    api_key_env: BAICHUAN_API_KEY
+    default_model: Baichuan4
+    models:
+      - Baichuan4
+      - Baichuan3-Turbo
+
+  # Anthropic Claude (通过官方 SDK)
+  - name: claude
+    type: claude
+    api_key_env: ANTHROPIC_API_KEY
+    default_model: claude-sonnet-4-6-20250514
+    models:
+      - claude-opus-4-8-20250514
+      - claude-sonnet-4-6-20250514
+      - claude-haiku-4-5-20250514
+
+# ---------------------------------------------------------------------------
+# RAG / 知识图谱 / 反AI / 章节 配置 (同前)
+# ---------------------------------------------------------------------------
+rag:
+  retrieval:
+    bm25_candidates: 8
+    semantic_top_k: 4
+    combined_weight_bm25: 0.3
+    combined_weight_semantic: 0.7
+    min_score_threshold: 0.5
+  embedding:
+    provider: local
+    local_model: BAAI/bge-small-zh-v1.5
+  conditional_retrieval:
+    enabled: true
+    trigger_keywords: [战斗, 突破, 揭露, 真相, 冲突, 反转, 重逢]
+
+knowledge_graph:
+  enabled: false
+  uri: bolt://localhost:7687
+  user: neo4j
+  password: password
+
+vector_store:
+  provider: chromadb
+  persist_directory: ./data/chroma
+  collection_name: novel_knowledge
+
+logging:
+  level: DEBUG
+  json_output: false
+  include_traceback: true
+  slow_request_threshold_ms: 5000
+
+anti_ai:
+  pattern_detection:
+    high_freq_ai_words_threshold: 3
+    weak_adverb_threshold: 3
+    uniform_sentence_sd_threshold: 4.0
+    perplexity_min: 50
+
+chapter:
+  default_words_min: 2000
+  default_words_max: 4000
+  max_revision_rounds: 3
+  max_consecutive_revise: 2
+  mobile_optimization: true
+
+  # ---------------------------------------------------------------------------
+  # 番茄爆款专家模式 (融合 500章+350章 实战经验)
+  # ---------------------------------------------------------------------------
+  fanqie_expert:
+    enabled: false                        # 是否启用番茄专家模式（默认关闭，需显式开启）
+    min_ai_score: 0.75                    # 最低AI评分（0-1，越高越严格）
+    max_revision_rounds: 3                # 最大修订轮次
+    rhythm_tracking: true                 # 是否追踪节奏（3/5/10章公式）
+    pre_write_check: true                 # 是否执行写前阻断五问
+    voice_card_required: true             # 是否要求角色语音卡
+    not_x_but_y_threshold: 2              # "不是X是Y"每章最大允许次数
+
+  # ---------------------------------------------------------------------------
+  # 起点精品专家模式 (融合《黑龙醒》100章实战 + 49章大修)
+  # ---------------------------------------------------------------------------
+  qidian_expert:
+    enabled: false                        # 是否启用起点专家模式（默认关闭，需显式开启）
+    min_ai_score: 0.75                    # 最低AI评分（0-1，越高越严格）
+    max_revision_rounds: 3                # 最大修订轮次
+    three_chapter_scan: true              # 三章一轮扫描制度
+    info_increment_required: true         # 信息增量必须（每章必须有新东西）
+    group_portrait_enabled: true          # 群像写作模式
+    paid_chapter_strategy: true           # 付费章节策略
+    voice_card_required: true             # 是否要求角色语音卡
+    not_x_but_y_threshold: 2              # "不是X是Y"每章最大允许次数
+
+  # ---------------------------------------------------------------------------
+  # 智斗小说写作模式 (融合《第九特区》《犯上者》《诡秘之主》《赘婿》)
+  # ---------------------------------------------------------------------------
+  zhidou_expert:
+    enabled: false                        # 是否启用智斗模式（默认关闭，需显式开启）
+    real_person_feeling: true             # 真人感塑造
+    info_gap_tracking: true               # 信息差追踪
+    five_layer_check: true                # 智斗五层检查（信息/资源/规则/人心/时间）
+    cognitive_payoff_required: true       # 认知爽感必须（恍然大悟/聪明反被聪明误/算无遗策/绝境翻盘）
+
+  # ---------------------------------------------------------------------------
+  # 十维评审体系 (小说改良诊断系统)
+  # ---------------------------------------------------------------------------
+  ten_dimension_eval:
+    enabled: false                        # 是否启用十维评审（默认关闭，需显式开启）
+    min_score: 6.0                        # 最低及格分（满分10分）
+    weights:                              # 各维度权重（总和应为1.0）
+      hook_strength: 0.12                 # 开篇吸引力
+      character_depth: 0.12               # 人物塑造深度
+      pacing: 0.10                        # 情节推进节奏
+      emotional_resonance: 0.10           # 情感共鸣强度
+      world_coherence: 0.10               # 世界观完整性
+      style_uniqueness: 0.08              # 语言风格独特性
+      payoff_density: 0.10                # 爽点密度与分布
+      suspense: 0.10                      # 悬念与期待感
+      chapter_hook: 0.10                  # 章节结尾钩子
+      theme_depth: 0.08                   # 主题深度与格局

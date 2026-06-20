@@ -1,0 +1,66 @@
+[project]
+name = "ai-novel-app"
+version = "0.1.0"
+description = "AI 小说生成智能体系统 — 多 Agent 协作 + RAG 知识库 + MCP 工具链"
+requires-python = ">=3.12"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "AI Novel App Team"}]
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.10",
+    "structlog>=24.4",
+    "pyyaml>=6.0",
+    "httpx>=0.28",
+    "anthropic>=0.45",
+    "chromadb>=0.5",
+    "neo4j>=5.27",
+    "rank-bm25>=0.2",
+    "python-dotenv>=1.0",
+    "jieba>=0.42",
+    "tenacity>=9.0",
+    "watchfiles>=0.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+    "httpx>=0.28",
+]
+
+[project.scripts]
+novel = "cli.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["core", "core/llm", "core/middleware", "models", "plugins", "skills", "mcp_servers", "rag", "web", "knowledge_base"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "smoke: 冒烟测试 (无需 API Key)",
+    "e2e: 端到端全链路测试 (需 API Key)",
+]

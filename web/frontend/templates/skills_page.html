@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Skill Builder{% endblock %}{% block page_title %}AI 自我扩展{% endblock %}
+{% block content %}
+<div class="page-header"><h1>Skill Builder</h1><p class="subtitle">AI生成插件保存到 <code>plugins/_built/</code>，重启不丢。门禁插件自动在章节生成时生效。</p></div>
+
+<div class="card"><h2>创建新插件</h2>
+    <textarea id="requirement" rows="3" placeholder="描述你需要的插件功能，例如：写一个检测战斗场面描写是否过于平淡的插件" style="width:100%;padding:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:14px;line-height:1.6;resize:vertical;font-family:inherit"></textarea>
+    <button class="btn btn-primary" onclick="buildSkill()" style="margin-top:8px">生成插件</button>
+    <div id="progress-box" style="display:none;margin-top:8px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span id="progress-step" class="muted"></span><span id="progress-pct" class="muted"></span></div>
+        <div style="height:4px;background:var(--border);border-radius:2px"><div id="progress-fill" style="height:100%;width:0;background:var(--accent);border-radius:2px;transition:width 0.5s"></div></div>
+    </div>
+    <div id="build-result" style="margin-top:8px"></div>
+</div>
+
+<div class="card">
+    <div class="section-header"><h2>已生成的插件</h2><span class="muted">门禁类自动应用到章节生成</span></div>
+    <div id="built-list"></div>
+    <div id="delete-bar" style="display:none;margin-top:4px;height:3px;background:var(--border);border-radius:2px"><div id="delete-fill" style="height:100%;width:0;background:var(--bad);border-radius:2px;transition:width 0.3s"></div></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+var _steps=['分析需求','生成代码','验证代码','保存文件','加载插件'];
+var _stepIdx=0;
+// sessionStorage persistence
+window.addEventListener('beforeunload',function(){
+    var state={resultHTML: document.getElementById('build-result').innerHTML};
+    sessionStorage.setItem('skills_state',JSON.stringify(state));
+});
+(function restore(){
+    try{ var s=JSON.parse(sessionStorage.getItem('skills_state'));
+        if(s&&s.resultHTML) document.getElementById('build-result').innerHTML=s.resultHTML;
+    }catch(e){}
+})();
+
+async function buildSkill(){
+    var req=document.getElementById('requirement').value.trim(); if(!req)return;
+    document.getElementById('build-result').innerHTML='';
+    document.getElementById('progress-box').style.display='block';
+    document.getElementById('progress-fill').style.width='0';
+    _stepIdx=0;
+    updateProgress(_steps[_stepIdx],10);
+    try{
+        updateProgress(_steps[1]+'...',25);
+        var r=await fetch('/api/v1/skills/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({requirement:req})});
+        updateProgress(_steps[2]+'...',55);
+        var d=await r.json();
+        updateProgress(_steps[3]+'...',75);
+        if(d.loaded){
+            updateProgress(_steps[4]+'...',90);
+            setTimeout(function(){
+                updateProgress('完成',100);
+                document.getElementById('build-result').innerHTML='<p class="success">插件 '+d.plugin_name+' 已生成并加载</p><p class="muted">门禁插件自动在章节生成时执行检查。重启后插件依然存在。</p>';
+                loadBuilt();
+            },500);
+        }else{
+            updateProgress('失败',0);
+            document.getElementById('build-result').innerHTML='<p class="error">'+d.message+'</p>';
+        }
+    }catch(e){
+        updateProgress('失败',0);
+        document.getElementById('build-result').innerHTML='<p class="error">失败: '+e.message+'</p>';
+    }
+    setTimeout(function(){document.getElementById('progress-box').style.display='none';},1500);
+}
+
+function updateProgress(step,pct){
+    document.getElementById('progress-step').textContent=step;
+    document.getElementById('progress-pct').textContent=pct+'%';
+    document.getElementById('progress-fill').style.width=pct+'%';
+}
+
+async function deletePlugin(name,btn){
+    if(!confirm('删除 '+name+'？不可恢复。'))return;
+    var bar=document.getElementById('delete-bar'); bar.style.display='block';
+    document.getElementById('delete-fill').style.width='10%';
+    btn.disabled=true; btn.textContent='...';
+    try{
+        await fetch('/api/v1/skills/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name})});
+        document.getElementById('delete-fill').style.width='100%';
+        setTimeout(function(){bar.style.display='none';loadBuilt();},300);
+    }catch(e){
+        document.getElementById('delete-fill').style.width='100%';
+        setTimeout(function(){bar.style.display='none';loadBuilt();},300);
+    }
+}
+
+async function loadBuilt(){
+    var list=document.getElementById('built-list');
+    list.innerHTML='<p class="muted">加载中...</p>';
+    try{
+        var r=await fetch('/api/v1/skills/built');
+        var d=await r.json();
+        if(!d.plugins||d.plugins.length===0){
+            list.innerHTML='<p class="muted">暂无AI生成的插件。在上方输入需求开始创建。门禁插件生成后自动在章节生成时执行检查。</p>';
+            return;
+        }
+        list.innerHTML=d.plugins.map(function(p){
+            var desc=p.description||(p.size>2000?'门禁检查插件':'AI生成插件');
+            return '<div class="model-card"><div class="model-info"><strong>'+p.name+'</strong><div class="muted">'+desc+'</div><div class="muted" style="font-size:11px">路径: plugins/_built/'+p.name+'/ | 代码: '+p.size+'字节 | 自动生效</div></div><div class="model-actions"><button class="btn btn-sm" onclick="deletePlugin(\''+p.name+'\',this)" style="color:var(--bad);border-color:var(--bad)">删除</button></div></div>';
+        }).join('');
+    }catch(e){
+        list.innerHTML='<p class="error">加载失败: '+e.message+'</p>';
+    }
+}
+
+loadBuilt();
+</script>
+{% endblock %}

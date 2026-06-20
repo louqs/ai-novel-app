@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}项目列表 — AI 小说生成智能体{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>📚 我的项目</h1>
+    <a href="/anti-ai" class="btn btn-secondary">🔍 反AI检测</a>
+</div>
+
+<div class="card" id="create-project">
+    <h2>创建新项目</h2>
+    <form id="create-form" onsubmit="createProject(event)">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="title">小说标题 *</label>
+                <input type="text" id="title" name="title" required maxlength="200" placeholder="如：重生之都市剑仙">
+            </div>
+            <div class="form-group">
+                <label for="platform">目标平台</label>
+                <select id="platform" name="platform">
+                    <option value="fanqie">番茄小说</option>
+                    <option value="qidian">起点中文网</option>
+                    <option value="jinjiang">晋江文学城</option>
+                    <option value="qimao">七猫小说</option>
+                    <option value="douban">豆瓣阅读</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="length">篇幅</label>
+                <select id="length" name="length">
+                    <option value="short">短篇 (1-5万字 · 约30章)</option>
+                    <option value="medium" selected>中篇 (5-15万字 · 约150章)</option>
+                    <option value="long">长篇 (15万字以上 · 约500章)</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-group">
+            <label for="one_liner">一句话梗概</label>
+            <input type="text" id="one_liner" name="one_liner" placeholder="一句话说清你的故事">
+        </div>
+        <div class="form-group">
+            <label for="genre_tags">类型标签 (逗号分隔)</label>
+            <input type="text" id="genre_tags" name="genre_tags" placeholder="如：都市, 修仙, 系统流">
+        </div>
+        <button type="submit" class="btn btn-primary">✨ 创建项目</button>
+    </form>
+    <div id="create-status"></div>
+</div>
+
+<div class="card">
+    <h2>已有项目</h2>
+    <div id="project-list">
+        <p class="muted">加载中...</p>
+    </div>
+</div>
+
+<div class="card">
+    <h2>系统状态</h2>
+    <div id="health-info">
+        <p class="muted">加载中...</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var platformNames={fanqie:'番茄小说',qidian:'起点中文网',jinjiang:'晋江文学城',qimao:'七猫小说',douban:'豆瓣阅读'};var lengthNames={short:'短篇',medium:'中篇',long:'长篇'};async function loadProjects(){
+    try {
+        const resp = await fetch('/api/v1/projects');
+        const projects = await resp.json();
+        const el = document.getElementById('project-list');
+        if (projects.length === 0) {
+            el.innerHTML = '<p class="muted">暂无项目，创建第一个吧 ✨</p>';
+            return;
+        }
+        el.innerHTML = projects.map(p => `
+            <div class="project-item">
+                <div class="project-info">
+                    <strong>${p.title}</strong>
+                    <span class="badge">${platformNames[p.platform]||p.platform}</span>
+                    <span class="muted">${lengthNames[p.length]||'中篇'} | ${p.current_chapter>0?'第'+p.current_chapter+'章':'未开始'}</span>
+                </div>
+                <div class="project-actions">
+                    <a href="/workbench?project_id=${p.project_id}" class="btn btn-sm">✏️ 创作</a>
+                    <a href="/coach?project_id=${p.project_id}" class="btn btn-sm">📊 教练</a>
+                    <a href="/stats?project_id=${p.project_id}" class="btn btn-sm">📈 看板</a>
+                    <button class="btn btn-sm" data-pid="${p.project_id}" onclick="exportProject(this)">📥 导出</button>
+                    <button class="btn btn-sm" data-pid="${p.project_id}" data-title="${(p.title||'').replace(/"/g,'&quot;')}" onclick="deleteProject(this)" style="color:var(--bad);border-color:var(--bad)">🗑</button>
+                </div>
+            </div>
+        `).join('');
+    } catch(e) {
+        document.getElementById('project-list').innerHTML = '<p class="error">加载失败</p>';
+    }
+}
+
+async function loadHealth() {
+    try {
+        const resp = await fetch('/api/v1/admin/health');
+        const data = await resp.json();
+        document.getElementById('health-info').innerHTML = `
+            <div class="status-grid">
+                <div class="status-item"><span class="label">状态</span><span class="value ok">${data.status}</span></div>
+                <div class="status-item"><span class="label">版本</span><span class="value">${data.version}</span></div>
+                <div class="status-item"><span class="label">已加载插件</span><span class="value">${data.plugins_loaded} 个</span></div>
+            </div>
+            <div class="plugin-tags">
+                ${(data.plugins || []).map(p => `<span class="tag">${p}</span>`).join('')}
+            </div>
+        `;
+    } catch(e) {
+        document.getElementById('health-info').innerHTML = '<p class="error">无法连接服务器</p>';
+    }
+}
+
+async function createProject(e) {
+    e.preventDefault();
+    const btn = e.target.querySelector('button');
+    btn.disabled = true;
+    btn.textContent = '创建中...';
+
+    const form = document.getElementById('create-form');
+    const tags = form.genre_tags.value.split(',').map(t => t.trim()).filter(Boolean);
+
+    try {
+        const resp = await fetch('/api/v1/projects', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                title: form.title.value,
+                platform: form.platform.value,
+                length: form.length.value,
+                one_liner: form.one_liner.value,
+                genre_tags: tags,
+            })
+        });
+        const result = await resp.json();
+        document.getElementById('create-status').innerHTML =
+            `<p class="success">项目 "${result.title}" 创建成功!</p>`;
+        form.reset();
+        loadProjects();
+    } catch(e) {
+        document.getElementById('create-status').innerHTML =
+            `<p class="error">创建失败: ${e}</p>`;
+    }
+    btn.disabled = false;
+    btn.textContent = '✨ 创建项目';
+}
+
+async function deleteProject(btn) {
+    var pid = btn.getAttribute('data-pid');
+    var title = btn.getAttribute('data-title') || pid;
+    if (!confirm('确定删除「' + title + '」？\n此操作不可恢复，包括所有章节和设定。')) return;
+    btn.disabled = true; btn.textContent = '...';
+    try {
+        var resp = await fetch('/api/v1/projects/' + pid, {method:'DELETE'});
+        if (resp.ok) { loadProjects(); } else { alert('删除失败'); btn.disabled = false; }
+    } catch(e) { alert('删除失败: '+e); btn.disabled = false; }
+}
+
+async function exportProject(btn){
+    var pid = btn.getAttribute('data-pid');
+    window.open('/api/v1/projects/'+pid+'/download?fmt=txt', '_blank');
+}
+
+loadProjects();
+loadHealth();
+</script>
+{% endblock %}

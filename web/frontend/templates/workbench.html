@@ -1,0 +1,494 @@
+{% extends "base.html" %}
+{% block title %}创作工作台{% endblock %}{% block nav_workbench %}active{% endblock %}{% block page_title %}创作工作台{% endblock %}
+
+{% block head %}
+<script src="https://d3js.org/d3.v7.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="workbench-layout">
+    <!-- 左侧: 项目 + 大纲 -->
+    <div class="wb-panel wb-left">
+        <div class="wb-section">
+            <select id="project-select" onchange="loadProject(this.value)" class="wb-select"><option value="">选择项目...</option></select>
+            <div id="project-info" class="project-info-compact"></div>
+        </div>
+        <div class="wb-section">
+            <div class="section-header"><h3>📋 大纲</h3><span style="display:flex;gap:4px">
+    <button class="btn btn-sm" onclick="generateOutline()" id="btn-outline" disabled>生成</button>
+    <button class="btn btn-sm" onclick="addChapter()" id="btn-add-ch" disabled title="追加章节">+</button>
+    <button class="btn btn-sm" onclick="editOutline()" id="btn-edit-ol" disabled title="编辑大纲">✏️</button>
+</span></div>
+<div id="outline-info" class="muted" style="font-size:10px;padding:2px 0"></div>
+            <div id="outline-tree" class="outline-tree" ondragover="dragOver(event)" ondrop="dropChapter(event)"><p class="muted">选择项目后加载</p></div>
+            <div id="outline-detail" class="outline-detail" style="display:none;margin-top:6px;padding:8px;background:var(--surface2);border-radius:4px;font-size:12px"></div>
+        </div>
+        <div class="wb-section">
+            <div class="section-header"><h3>👥 人物</h3><button class="btn btn-sm" onclick="buildGraph()">🕸️ 建图</button></div>
+            <div id="characters-mini"></div>
+        </div>
+    </div>
+
+    <!-- 中间: 编辑器 -->
+    <div class="wb-panel wb-center">
+        <div class="wb-toolbar">
+            <span id="current-chapter-label">选择章节</span>
+            <div>
+                <button class="btn btn-primary btn-sm" onclick="generateStream()" id="btn-generate" disabled>⚡ 生成章节</button>
+                <button class="btn btn-sm" onclick="saveChapter()">💾 保存</button>
+                <button class="btn btn-sm" onclick="checkLive()" id="btn-live-check" disabled>🔍 检测</button>
+            </div>
+        </div>
+        <div class="chapter-editor">
+            <textarea id="chapter-content" placeholder="选择或生成章节...&#10;&#10;" disabled></textarea>
+            <div id="chapter-loading" class="loading-overlay" style="display:none"><div class="spinner"></div><p id="loading-msg">AI 撰写中...</p></div>
+        </div>
+        <div class="chapter-footer">
+            <span id="word-count">0 字</span>
+            <span id="ai-score-live" class="muted"></span>
+        </div>
+    </div>
+
+    <!-- 右侧: 图谱 + 工具 -->
+    <div class="wb-panel wb-right">
+        <div class="wb-tabs">
+            <button class="wb-tab active" onclick="switchTab('graph')">🕸️ 关系</button>
+            <button class="wb-tab" onclick="switchTab('inspire')">💡 灵感</button>
+            <button class="wb-tab" onclick="switchTab('foreshadow')">📌 伏笔</button>
+            <button class="wb-tab" onclick="switchTab('antiai')">🔍 检测</button>
+        </div>
+        <div class="wb-tab-content active" id="tab-graph">
+            <div id="mini-graph" style="width:100%;height:260px;background:var(--bg);border-radius:4px;overflow:hidden"></div>
+            <button class="btn btn-sm" onclick="loadMiniGraph()" style="width:100%;margin-top:4px">刷新图谱</button>
+        </div>
+        <div class="wb-tab-content" id="tab-inspire">
+            <textarea id="seed-input" rows="2" placeholder="输入灵感..."></textarea>
+            <select id="seed-platform" class="wb-select"><option value="fanqie">番茄</option><option value="qidian">起点</option><option value="jinjiang">晋江</option></select>
+            <button class="btn btn-primary btn-sm" onclick="incubateIdea()" style="width:100%;margin-top:4px">孵化</button>
+            <div id="idea-results"></div>
+        </div>
+        <div class="wb-tab-content" id="tab-foreshadow">
+            <button class="btn btn-sm" onclick="loadForeshadows()" style="width:100%;margin-bottom:4px">刷新伏笔</button>
+            <div id="foreshadow-results"><p class="muted">点击刷新查看活跃伏笔</p></div>
+        </div>
+        <div class="wb-tab-content" id="tab-antiai">
+            <button class="btn btn-sm" onclick="checkLive()" style="width:100%;margin-bottom:4px">检测当前章节</button>
+            <div id="antiai-results"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var PLATFORM_MAP={fanqie:'番茄小说',qidian:'起点中文网',jinjiang:'晋江文学城',qimao:'七猫小说',douban:'豆瓣阅读'};
+var LENGTH_MAP={short:'短篇',medium:'中篇',long:'长篇'};
+let currentProjectId=sessionStorage.getItem('wb_pid')||'', currentChapterNum=parseInt(sessionStorage.getItem('wb_ch')||'0'), outlineData=null;
+window.addEventListener('beforeunload',()=>{ sessionStorage.setItem('wb_pid',currentProjectId); sessionStorage.setItem('wb_ch',String(currentChapterNum)); });
+let autoSave = null;
+
+// ===== Init =====
+(async function init(){
+    try {
+        const resp = await fetch('/api/v1/projects');
+        const projects = await resp.json();
+        const sel = document.getElementById('project-select');
+        projects.forEach(p => { sel.innerHTML += `<option value="${p.project_id}">${p.title}</option>`; });
+    } catch(e) {}
+    const params = new URLSearchParams(window.location.search);
+    if(params.get('project_id')){ document.getElementById('project-select').value=params.get('project_id'); await loadProject(params.get('project_id')); } else if(currentProjectId){ document.getElementById('project-select').value=currentProjectId; await loadProject(currentProjectId); }
+    // 快捷键
+    document.addEventListener('keydown', e => {
+        if(e.ctrlKey && e.key==='g'){ e.preventDefault(); if(!e.shiftKey) generateChapter(); else generateStream(); }
+    });
+})();
+
+// ===== Project =====
+async function loadProject(pid){
+    if(!pid) return; currentProjectId=pid;
+    document.getElementById('btn-outline').disabled=false;
+    try {
+        const resp = await fetch(`/api/v1/projects/${pid}`); const proj = await resp.json();
+        var platName=PLATFORM_MAP[proj.platform]||proj.platform||'未知';
+var lenName=LENGTH_MAP[proj.length]||(proj.length||'中篇');
+var chNum=proj.current_chapter||0;
+var chText=chNum>0?'第'+chNum+'章':'未开始';
+document.getElementById('project-info').innerHTML='<div><strong>'+proj.title+'</strong></div><div class="muted">'+platName+' | '+lenName+' | '+chText+'</div>';
+        window.history.replaceState({},'',`?project_id=${pid}`);
+        await loadOutline(); await loadCharactersMini();
+    } catch(e) { document.getElementById('project-info').innerHTML='<p class="error">加载失败</p>'; }
+}
+
+// ===== Outline (拖拽排序) =====
+async function loadOutline(){
+    const tree = document.getElementById('outline-tree');
+    try {
+        const resp = await fetch(`/api/v1/projects/${currentProjectId}/outline`);
+        outlineData = await resp.json();
+    } catch(e) { outlineData=null; }
+    if(!outlineData||!outlineData.volumes){ tree.innerHTML='<p class="muted">暂无大纲</p>'; return; }
+    // 从数据库检查哪些章节已完成
+    try{
+        var chResp=await fetch('/api/v1/projects/'+currentProjectId+'/chapters/list');
+        var chList=await chResp.json();
+        var completedNums=new Set((chList||[]).map(function(c){ return c.chapter_number; }));
+        outlineData.volumes.forEach(function(v){ v.chapters.forEach(function(ch){ ch.status=completedNums.has(ch.chapter_number)?'completed':'planned'; }); });
+    }catch(e){}
+    let html='';
+    outlineData.volumes.forEach(vol => {
+        html+=`<div class="volume-title">📘 第${vol.volume_number}卷: ${vol.title||''}</div>`;
+        (vol.chapters||[]).forEach((ch,i) => {
+            const star = ch.is_hook_point?'⭐':(ch.is_climax?'⚡':'');
+            const active = ch.chapter_number===currentChapterNum?'active':'';
+            html+=`<div class="outline-chapter ${active}" draggable="true"
+                onclick="selectChapter(${ch.chapter_number},this)" data-title="${(ch.title||'').replace(/"/g,'&quot;')}"
+                data-ch="${ch.chapter_number}" data-vol="${vol.volume_number}">
+                ${star} Ch${ch.chapter_number} ${ch.title||''}</div>`;
+        });
+    });
+    tree.innerHTML=html;
+    // 更新大纲信息
+    var totalChs=0, doneChs=0;
+    outlineData.volumes.forEach(function(v){ totalChs+=v.chapters.length; v.chapters.forEach(function(ch){ if(ch.status==='completed') doneChs++; }); });
+    document.getElementById('outline-info').textContent='共 '+totalChs+' 章 | 已完成 '+doneChs+' 章 | 点击章节查看或生成';
+    document.getElementById('btn-add-ch').disabled=false;
+    document.getElementById('btn-edit-ol').disabled=false;
+}
+
+function dragOver(e){ e.preventDefault(); e.dataTransfer.dropEffect='move'; }
+function dropChapter(e){ e.preventDefault(); toast('拖拽排序功能已就绪（保存时生效）', 'info'); }
+
+function selectChapter(num,el){
+    if(currentChapterNum===num){ showChapterDetail(num); return; } // 同一章显示详情
+    currentChapterNum=num;
+    var title=el?el.getAttribute('data-title')||('第'+num+'章'):('第'+num+'章');document.getElementById('current-chapter-label').textContent='第'+num+'章: '+title;
+    document.getElementById('btn-generate').disabled=false;
+    document.getElementById('btn-live-check').disabled=false;
+    // 立刻清空编辑器
+    const ta=document.getElementById('chapter-content');
+    ta.value=''; ta.disabled=false; updateWordCount();
+    document.getElementById('ai-score-live').textContent='';
+    // 高亮
+    document.querySelectorAll('.outline-chapter').forEach(e=>e.classList.remove('active'));
+    if(el) el.classList.add('active');
+    // 加载内容
+    loadChapterContent(num);
+    loadMiniGraph();
+}
+
+async function loadChapterContent(num){
+    const ta=document.getElementById('chapter-content');
+    ta.value='加载中...'; ta.disabled=true;
+    try {
+        const resp = await fetch(`/api/v1/projects/${currentProjectId}/chapters/${num}`);
+        if(resp.ok){
+            const data=await resp.json();
+            ta.value=data.content||'';
+            ta.disabled=false;
+            updateWordCount();
+            // 自动检测AI评分
+            if(data.content) runLiveCheck();
+        } else {
+            ta.value=''; ta.disabled=false; updateWordCount();
+        }
+    } catch(e) { ta.value=''; ta.disabled=false; }
+}
+
+// ===== Generate =====
+async function generateStream(){
+    if(!currentProjectId||!currentChapterNum) return;
+    const overlay=document.getElementById('chapter-loading');
+    const ta=document.getElementById('chapter-content');
+    // 隐藏遮罩，让用户看清生成内容
+    overlay.style.display='none';
+    document.getElementById('btn-generate').disabled=true;
+    var statusBar=document.createElement('div'); statusBar.id='stream-status';
+    statusBar.style.cssText='position:absolute;top:0;left:0;right:0;height:3px;background:var(--accent);z-index:10;opacity:0.8;border-radius:0';
+    document.querySelector('.chapter-editor').appendChild(statusBar);
+    ta.value=''; ta.disabled=false;
+    try {
+        const resp=await fetch('/api/v1/stream/chapter',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({project_id:currentProjectId,chapter_number:currentChapterNum})});
+        const reader=resp.body.getReader(); const decoder=new TextDecoder(); let buffer='';
+        let tokenCount=0;
+        while(true){
+            const{done,value}=await reader.read(); if(done) break;
+            buffer+=decoder.decode(value,{stream:true});
+            const lines=buffer.split('\n'); buffer=lines.pop()||'';
+            for(const line of lines){
+                if(line.startsWith('data: ')){
+                    try{ const d=JSON.parse(line.slice(6));
+                        if(d.token){ ta.value+=d.token; ta.scrollTop=ta.scrollHeight; tokenCount++;
+                            if(tokenCount%20===0){ updateWordCount(); document.getElementById('loading-msg').textContent=`AI 撰写中... (${ta.value.length}字)`; }
+                        }
+                        if(d.status==='saved'){
+    toast('已保存 ('+d.word_count+'字)','success'); updateWordCount();
+    // 刷新项目信息和进度
+    loadProject(currentProjectId);
+    if(outlineData) outlineData.volumes.forEach(function(v){ v.chapters.forEach(function(ch){ if(ch.chapter_number===currentChapterNum) ch.status='completed'; }); });
+    loadOutline();
+}
+                        if(d.error){ toast('生成失败: '+d.error,'error'); }
+                    } catch(e){}
+                }
+            }
+        }
+    } catch(e) { toast('流式生成失败: '+e, 'error'); }
+    var sb=document.getElementById('stream-status'); if(sb) sb.remove();
+    document.getElementById('btn-generate').disabled=false;
+    runLiveCheck(); updateWordCount();
+}
+
+async function saveChapter(){
+    const content=document.getElementById('chapter-content').value;
+    if(!currentProjectId||!currentChapterNum||!content) return;
+    try {
+        await fetch('/api/v1/projects/'+currentProjectId+'/chapters/'+currentChapterNum,{
+            method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({content})
+        });
+        // 标记章节已完成
+        if(outlineData) outlineData.volumes.forEach(function(v){ v.chapters.forEach(function(ch){ if(ch.chapter_number===currentChapterNum) ch.status='completed'; }); });
+        loadOutline();
+    } catch(e) { toast('保存失败', 'error'); }
+}
+
+// ===== Live AI Score =====
+let _scoreTimer=null;
+function updateWordCount(){
+    const len=document.getElementById('chapter-content').value.length;
+    document.getElementById('word-count').textContent=len+' 字';
+    clearTimeout(_scoreTimer);
+    _scoreTimer=setTimeout(runLiveCheck, 2000);
+}
+document.getElementById('chapter-content').addEventListener('input', updateWordCount);
+
+async function runLiveCheck(){
+    const content=document.getElementById('chapter-content').value;
+    if(!content||content.length<50) return;
+    const el=document.getElementById('ai-score-live');
+    try {
+        const resp=await fetch('/api/v1/anti-ai/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:content})});
+        const d=await resp.json();
+        const cls=d.ai_score>0.7?'ok':(d.ai_score>0.4?'warn':'bad');
+        el.innerHTML=`AI评分: <span class="${cls}" style="font-weight:600">${(d.ai_score*100).toFixed(0)}</span>`;
+    } catch(e){}
+}
+
+async function checkLive(){
+    const content=document.getElementById('chapter-content').value;
+    if(!content) return;
+    const resDiv=document.getElementById('antiai-results');
+    resDiv.innerHTML='<p class="muted">检测中...</p>';
+    switchTab('antiai');
+    try {
+        const resp=await fetch('/api/v1/anti-ai/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:content})});
+        const d=await resp.json();
+        let html=`<div class="score-display"><div class="score-circle ${d.ai_score>0.7?'ok':(d.ai_score>0.4?'warn':'bad')}"><span class="score-number">${(d.ai_score*100).toFixed(0)}</span></div></div>`;
+        if(d.pattern_matches&&d.pattern_matches.length){
+            html+=d.pattern_matches.map(m=>`<div class="pattern-item"><span class="severity severity-${m.severity}">${m.severity}</span> ${m.category}: ${m.count}处</div>`).join('');
+        } else { html+='<p class="success">未检测到AI痕迹</p>'; }
+        resDiv.innerHTML=html;
+    } catch(e){ resDiv.innerHTML='<p class="error">检测失败</p>'; }
+}
+
+// ===== Mini D3 Graph =====
+async function loadMiniGraph(){
+    const container=document.getElementById('mini-graph');
+    if(!container||!currentProjectId) return;
+    try {
+        const resp=await fetch('/api/v1/graph/export?project_id='+currentProjectId);
+        const data=await resp.json();
+        if(!data.nodes||data.nodes.length===0){ container.innerHTML='<p class="muted" style="text-align:center;padding-top:100px">暂无图谱<br><small>请先生成项目设定或点击「建图」</small></p>'; return; }
+        drawGraph(container, data);
+    } catch(e){}
+}
+
+function drawGraph(container, data){
+    container.innerHTML='';
+    const W=container.clientWidth, H=container.clientHeight;
+    const svg=d3.select(container).append('svg').attr('width',W).attr('height',H);
+    const color=d3.scaleOrdinal(d3.schemeCategory10);
+
+    const nodes=data.nodes.map(n=>({...n}));
+    const edges=data.edges.map(e=>({source:e.source,target:e.target,type:e.type}));
+
+    const sim=d3.forceSimulation(nodes)
+        .force('link',d3.forceLink(edges).id(d=>d.id).distance(60))
+        .force('charge',d3.forceManyBody().strength(-200))
+        .force('center',d3.forceCenter(W/2,H/2));
+
+    const link=svg.append('g').selectAll('line').data(edges).join('line')
+        .attr('stroke','#444').attr('stroke-width',1.5);
+    const node=svg.append('g').selectAll('circle').data(nodes).join('circle')
+        .attr('r',8).attr('fill',d=>color(d.group))
+        .call(d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(0.3).restart();d.fx=d.x;d.fy=d.y;})
+              .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y;}).on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
+    const label=svg.append('g').selectAll('text').data(nodes).join('text')
+        .text(d=>d.label||d.id).attr('font-size',10).attr('fill','#aaa').attr('dx',10).attr('dy',4);
+
+    sim.on('tick',()=>{link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+        node.attr('cx',d=>d.x).attr('cy',d=>d.y);label.attr('x',d=>d.x).attr('y',d=>d.y);});
+}
+
+// ===== Right Panel Tools =====
+function switchTab(tab){
+    document.querySelectorAll('.wb-tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.wb-tab-content').forEach(c=>c.classList.remove('active'));
+    event.target.classList.add('active'); document.getElementById('tab-'+tab).classList.add('active');
+}
+var _incubatedDirections=[];
+async function createProjectFromIdea(idx){
+    var dir=_incubatedDirections[idx]; if(!dir) return;
+    var platform=document.getElementById('seed-platform').value;
+    try {
+        var r=await fetch('/api/v1/projects',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({title:dir.logline||'新项目',platform:platform,one_liner:dir.core_conflict||'',genre_tags:dir.genre_tags||[],length:'medium'})});
+        var d=await r.json();
+        if(d.project_id){ toast('项目已创建','success'); window.location.href='/workbench?project_id='+d.project_id; }
+    } catch(e){ toast('创建失败','error'); }
+}
+async function incubateIdea(){
+    const seed=document.getElementById('seed-input').value.trim(); if(!seed) return;
+    const resultDiv=document.getElementById('idea-results'); resultDiv.innerHTML='<p class="muted">孵化中...</p>';
+    try {
+        const resp=await fetch('/api/v1/skills/incubate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({args:{seed,platform:document.getElementById('seed-platform').value,count:2}})});
+        const d=await resp.json();
+        if(d.directions){ _incubatedDirections=d.directions; resultDiv.innerHTML=d.directions.map((d,i)=>`<div class="idea-card"><strong>方向${i+1}:</strong> ${d.logline||''}<br><span class="muted">冲突: ${d.core_conflict||''}</span><br><span class="muted">金手指: ${d.golden_finger||''}</span><br><span class="muted">标签: ${(d.genre_tags||[]).join(', ')}</span><div style="margin-top:4px"><button class="btn btn-primary btn-sm" onclick="createProjectFromIdea(${i})">📖 以此创建项目</button></div></div>`).join('');}
+    } catch(e){ resultDiv.innerHTML='<p class="error">失败</p>'; }
+}
+async function generateOutline(){
+    if(!currentProjectId) return; const btn=document.getElementById('btn-outline'); btn.disabled=true; btn.textContent='生成中...';
+    const tree=document.getElementById('outline-tree'); tree.innerHTML='<p class="muted">⏳ 流式生成大纲中...</p>';
+    try {
+        const resp=await fetch('/api/v1/stream/outline',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({project_id:currentProjectId})});
+        const reader=resp.body.getReader(); const decoder=new TextDecoder(); let buffer='';
+        while(true){
+            const{done,value}=await reader.read(); if(done) break;
+            buffer+=decoder.decode(value,{stream:true});
+            const lines=buffer.split('\n'); buffer=lines.pop()||'';
+            for(const line of lines){
+                if(line.startsWith('data: ')){
+                    try{ const d=JSON.parse(line.slice(6));
+                        if(d.status==='progress') tree.innerHTML=`<p class="muted">⏳ ${d.message}</p>`;
+                        if(d.status==='saved'){ toast(`大纲生成完成 (${d.volumes}卷)`,'success'); await loadOutline(); }
+                    }catch(e){}
+                }
+            }
+        }
+    } catch(e){ toast('生成失败', 'error'); }
+    btn.disabled=false; btn.textContent='生成';
+}
+async function loadForeshadows(){
+    if(!currentProjectId) return;
+    const div=document.getElementById('foreshadow-results');
+    div.innerHTML='<p class="muted">加载中...</p>';
+    try {
+        const resp=await fetch('/api/v1/projects/'+currentProjectId+'/foreshadows/audit');
+        const d=await resp.json();
+        if(!d||d.unpaid_count===0){ div.innerHTML='<p class="success">所有伏笔已回收</p>'; return; }
+        let h='<p>未回收: '+d.unpaid_count+'/'+d.total+' (回收率: '+d.payoff_rate+'%)</p>';
+        for(const f of (d.unpaid||[]).slice(0,10)) h+='<div class="pattern-item"><strong>'+f.foreshadow_id+'</strong>: '+(f.description||'').slice(0,50)+' ['+f.status+']</div>';
+        div.innerHTML=h;
+    } catch(e){ div.innerHTML='<p class="error">加载失败</p>'; }
+}
+async function addChapter(){
+    if(!outlineData||!outlineData.volumes) return;
+    var title=prompt('新章节标题:','新章节');
+    if(!title) return;
+    var lastVol=outlineData.volumes[outlineData.volumes.length-1];
+    var lastCh=lastVol.chapters[lastVol.chapters.length-1];
+    var newNum=(lastCh?lastCh.chapter_number:0)+1;
+    lastVol.chapters.push({chapter_number:newNum,volume_number:lastVol.volume_number,title:title,summary:'',status:'planned',key_events:[],character_moments:[],is_climax:false,is_hook_point:false});
+    // Save
+    await fetch('/api/v1/projects/'+currentProjectId+'/outline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(outlineData)});
+    loadOutline(); toast('已追加第'+newNum+'章','success');
+}
+var _editing=false;
+function editOutline(){
+    var tree=document.getElementById('outline-tree');
+    if(_editing){
+        tree.innerHTML='<p class="muted">退出编辑模式</p>'; loadOutline(); _editing=false;
+        document.getElementById('btn-edit-ol').textContent='✏️';
+        return;
+    }
+    _editing=true; document.getElementById('btn-edit-ol').textContent='保存';
+    if(!outlineData||!outlineData.volumes){ tree.innerHTML='<p class="muted">暂无大纲</p>'; return; }
+    var html='';
+    outlineData.volumes.forEach(function(vol,vi){
+        html+='<div class="volume-title">📘 卷'+vol.volume_number+': <input value="'+escAttr(vol.title||'')+'" onchange="outlineData.volumes['+vi+'].title=this.value" style="width:120px;background:var(--bg);color:var(--text);border:1px solid var(--accent);border-radius:3px;padding:2px 4px;font-size:12px"></div>';
+        (vol.chapters||[]).forEach(function(ch,ci){
+            html+='<div style="display:flex;gap:4px;align-items:center;margin:2px 0;font-size:12px">'+
+                '<span style="min-width:30px">Ch'+ch.chapter_number+'</span>'+
+                '<input value="'+escAttr(ch.title||'')+'" onchange="outlineData.volumes['+vi+'].chapters['+ci+'].title=this.value" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:2px 4px;font-size:12px">'+
+                '<input value="'+escAttr(ch.summary||'')+'" onchange="outlineData.volumes['+vi+'].chapters['+ci+'].summary=this.value" placeholder="概要" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:2px 4px;font-size:12px">'+
+                '<button class="btn btn-sm" onclick="deleteChapter('+vi+','+ci+')" style="color:var(--bad);font-size:10px">✕</button>'+
+                '</div>';
+        });
+        html+='<button class="btn btn-sm" onclick="addChapterToVolume('+vi+')" style="margin:4px 0;font-size:11px">+ 添加章节</button><br>';
+    });
+    tree.innerHTML=html+'<br><button class="btn btn-primary btn-sm" onclick="saveOutlineEdit()">💾 保存更改</button> <button class="btn btn-sm" onclick="_editing=false;editOutline();loadOutline()">取消</button>';
+}
+function deleteChapter(vi,ci){
+    if(!confirm('删除第'+(outlineData.volumes[vi].chapters[ci].chapter_number||'?')+'章？')) return;
+    outlineData.volumes[vi].chapters.splice(ci,1);
+    editOutline();
+}
+function addChapterToVolume(vi){
+    var chs=outlineData.volumes[vi].chapters;
+    var maxNum=0; chs.forEach(function(c){ if(c.chapter_number>maxNum) maxNum=c.chapter_number; });
+    chs.push({chapter_number:maxNum+1,volume_number:vi+1,title:'新章节',summary:'',status:'planned',key_events:[],character_moments:[],is_climax:false,is_hook_point:false});
+    editOutline();
+}
+async function saveOutlineEdit(){
+    try{
+        await fetch('/api/v1/projects/'+currentProjectId+'/outline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(outlineData)});
+        _editing=false; loadOutline(); document.getElementById('btn-edit-ol').textContent='✏️'; toast('大纲已保存','success');
+    }catch(e){ toast('保存失败','error'); }
+}
+function escAttr(s){ return (s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function closePopup(){var p=document.getElementById("outline-popup");if(p)p.remove();}
+function showChapterDetail(num){
+    if(!outlineData||_editing) return;
+    var node=null;
+    outlineData.volumes.forEach(function(v){ v.chapters.forEach(function(ch){ if(ch.chapter_number===num) node=ch; }); });
+    if(!node) return;
+    var popup=document.getElementById('outline-popup');
+    if(!popup){
+        popup=document.createElement('div'); popup.id='outline-popup';
+        popup.style.cssText='position:fixed;top:80px;left:260px;z-index:999;background:var(--surface);border:2px solid var(--accent);border-radius:8px;padding:16px;max-width:340px;box-shadow:0 8px 32px rgba(0,0,0,0.6);font-size:13px;line-height:1.8';
+        document.body.appendChild(popup);
+    }
+    popup.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'+
+        '<strong style="font-size:15px">第'+num+'章: '+escAttr(node.title||'')+'</strong>'+
+        '<button onclick="closePopup()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:16px">✕</button>'+
+        '</div>'+
+        (node.is_climax?'<span style="color:#ff9800;font-weight:600">⚡ 高潮章节</span> ':'')+
+        (node.is_hook_point?'<span style="color:#4caf50;font-weight:600">⭐ 名场面</span> ':'')+
+        '<div style="margin-top:6px"><span class="muted">概要:</span><br>'+(node.summary||'无')+'</div>'+
+        '<div style="margin-top:4px"><span class="muted">关键事件:</span> '+(node.key_events||[]).join(', ')||'无'+'</div>'+
+        '<div style="margin-top:4px"><span class="muted">人物节点:</span> '+(node.character_moments||[]).join(', ')||'无'+'</div>'+
+        '<div style="margin-top:8px"><button class="btn btn-sm" onclick="editOutline()">✏️ 编辑大纲</button></div>';
+    popup.style.display='block';
+}
+async function loadCharactersMini(){
+    try {
+        const resp=await fetch(`/api/v1/projects/${currentProjectId}/characters`);
+        const data=await resp.json();
+        const chars=data.characters||{};
+        const names=Object.values(chars).map(c=>c.name||'?').slice(0,8);
+        document.getElementById('characters-mini').innerHTML=names.length?names.map(n=>`<span class="tag">${n}</span>`).join(''):'<p class="muted">暂无</p>';
+    } catch(e){}
+}
+
+async function buildGraph(){
+    if(!currentProjectId) return;
+    try {
+        const resp=await fetch('/api/v1/graph/build?project_id='+currentProjectId,{method:'POST'});
+        const d=await resp.json();
+        toast(`图谱已构建: ${d.nodes_added||0}节点 ${d.edges_added||0}边`, 'success');
+        loadMiniGraph();
+    } catch(e){ toast('图谱构建失败', 'error'); }
+}
+</script>
+{% endblock %}

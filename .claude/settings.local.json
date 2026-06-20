@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_fanqie_expert.py -v)",
+      "Bash(.venv/Scripts/python -m pytest tests/test_fanqie_expert.py -v)",
+      "Bash(.venv/Scripts/python -c ' *)",
+      "Bash(.venv/Scripts/python -m pytest tests/test_expert_modes.py -v)",
+      "Bash(.venv/Scripts/python -m pytest tests/ -v)",
+      "Bash(.venv/Scripts/python -m ruff check plugins/chapter_writer/plugin.py plugins/quality_evaluator/plugin.py tests/test_expert_modes.py)",
+      "Bash(.venv/Scripts/python -m ruff format plugins/chapter_writer/plugin.py plugins/quality_evaluator/plugin.py tests/test_expert_modes.py)",
+      "Bash(.venv/Scripts/python -m ruff check --fix plugins/chapter_writer/plugin.py plugins/quality_evaluator/plugin.py tests/test_expert_modes.py)",
+      "Bash(.venv/Scripts/python -m pytest tests/test_expert_modes.py tests/test_fanqie_expert.py -v)",
+      "Bash(.venv/Scripts/python -m pytest tests/test_model_registry.py -v)",
+      "WebSearch"
+    ]
+  }
+}

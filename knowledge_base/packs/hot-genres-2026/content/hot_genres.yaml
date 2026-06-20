@@ -1,0 +1,70 @@
+# 网文热门赛道数据
+
+> 更新: 2026
+
+---
+
+genres:
+
+  - name: 都市脑洞
+    platform: fanqie
+    audience: 男频
+    heat: ★★★★★
+    description: 现代背景 + 反常设定。流量最稳，7-14天出数据。
+    keywords: [系统, 穿越, 异能, 都市, 脑洞]
+    competition: 高
+    new_author_friendly: true
+
+  - name: 战神赘婿
+    platform: fanqie
+    audience: 男频
+    heat: ★★★★★
+    description: 身份反转 + 极致碾压。最稳定的爆款制造机。
+    keywords: [战神, 赘婿, 逆袭, 打脸, 身份反转]
+    competition: 极高
+    new_author_friendly: true
+
+  - name: 规则类怪谈
+    platform: fanqie
+    audience: 男频
+    heat: ★★★★
+    description: 诡异场景 + 智斗解密。竞争相对小，容易出圈。
+    keywords: [规则, 怪谈, 诡异, 智斗, 解密]
+    competition: 中
+    new_author_friendly: true
+
+  - name: 萌宝甜宠
+    platform: fanqie
+    audience: 女频
+    heat: ★★★★★
+    description: 带球跑 + 霸总追妻。经典永不过时。
+    keywords: [萌宝, 甜宠, 霸总, 带球跑, 追妻]
+    competition: 极高
+    new_author_friendly: true
+
+  - name: 年代文+系统
+    platform: fanqie
+    audience: 女频
+    heat: ★★★★
+    description: 穿越七零/八零 + 靠系统发家致富。代入感强。
+    keywords: [年代, 穿越, 系统, 发家, 种田]
+    competition: 中
+    new_author_friendly: true
+
+  - name: 神豪流翻新
+    platform: fanqie
+    audience: 男频
+    heat: ★★★★
+    description: 灵气复苏/神明降临 + 神豪。短剧改编热门。
+    keywords: [神豪, 灵气复苏, 神明, 都市, 花钱]
+    competition: 高
+    new_author_friendly: true
+
+  - name: 重生复仇
+    platform: fanqie
+    audience: 女频
+    heat: ★★★★
+    description: 前世被虐 → 重生归来 → 手撕渣男/绿茶。
+    keywords: [重生, 复仇, 虐渣, 爽文, 女强]
+    competition: 高
+    new_author_friendly: true

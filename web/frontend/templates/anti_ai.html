@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}反AI检测{% endblock %}{% block page_title %}反AI检测与改写{% endblock %}
+{% block content %}
+<div class="page-header"><h1>反AI检测与人性化改写</h1><p class="subtitle">粘贴文本→检测→AI改写→逐条合并→应用</p></div>
+<div class="card">
+    <textarea id="text-input" rows="10" placeholder="在此粘贴小说文本（建议500字以上以获得更好的改写效果）..." style="width:100%;padding:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:14px;line-height:1.8;resize:vertical;font-family:inherit"></textarea>
+    <span id="char-count">0 字</span>
+    <div style="margin:8px 0">
+        <button class="btn btn-primary" onclick="step1_detect()">1.检测</button>
+        <button class="btn" onclick="step2_humanize()">2.AI改写</button>
+    </div>
+    <div id="progress-bar" style="display:none;margin-top:8px;height:4px;background:var(--border);border-radius:2px"><div id="progress-fill" style="height:100%;width:0;background:var(--accent);border-radius:2px;transition:width 0.3s"></div></div>
+</div>
+<div class="card" id="detect-card" style="display:none"><h2>检测结果</h2><div id="detect-result"></div></div>
+<div class="card" id="merge-card" style="display:none">
+    <div class="section-header"><h2>合并对比</h2><div><button class="btn btn-sm" onclick="batchAccept()">全部采纳</button><button class="btn btn-sm" onclick="batchReject()">全部忽略</button><span class="muted" id="merge-stats" style="margin-left:8px"></span></div></div>
+    <div class="merge-three-col">
+        <div class="merge-col orig-col"><div class="col-header">原文</div><div id="col-original" class="col-body"></div></div>
+        <div class="merge-col diff-col"><div class="col-header">差异卡片</div><div id="col-diffs" class="col-body"></div></div>
+        <div class="merge-col final-col"><div class="col-header">合并结果</div><textarea id="col-final" class="col-body-edit"></textarea></div>
+    </div>
+    <div style="margin-top:8px"><button class="btn btn-primary" onclick="applyMerge()">应用合并结果</button><button class="btn" onclick="document.getElementById('merge-card').style.display='none'">取消</button></div>
+</div>
+<style>
+.merge-three-col{display:flex;gap:8px;min-height:350px}
+.merge-col{flex:1;display:flex;flex-direction:column;min-width:0}
+.orig-col{flex:1.2}.diff-col{flex:1.5}.final-col{flex:1.3}
+.col-header{font-weight:600;font-size:12px;padding:6px 8px;background:var(--surface2);border-radius:4px 4px 0 0;text-align:center}
+.col-body{padding:8px;background:var(--bg);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;overflow-y:auto;max-height:450px;font-size:13px;line-height:1.8}
+.col-body-edit{width:100%;height:450px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;padding:8px;font-size:13px;font-family:inherit}
+.hl-delete{background:rgba(244,67,54,0.15);text-decoration:line-through;padding:2px 0}
+.diff-card{display:flex;align-items:flex-start;gap:8px;padding:8px;margin:4px 0;background:var(--surface);border:2px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.2s}
+.diff-card:hover{border-color:var(--text-muted)}
+.diff-card.status-accepted{border-color:var(--ok);background:rgba(76,175,80,0.06)}
+.diff-card.status-rejected{border-color:var(--bad);opacity:0.5}
+.diff-card.status-edited{border-color:var(--accent)}
+.card-status{font-size:18px;flex-shrink:0}
+.card-content{flex:1;min-width:0}
+.card-row{padding:2px 4px;border-radius:3px;font-size:12px;line-height:1.6;margin:2px 0}
+.orig-row{background:rgba(244,67,54,0.05)}.opt-row{background:rgba(76,175,80,0.05)}
+.card-tag{font-weight:700;margin-right:4px}.card-tag.del{color:#f44336}.card-tag.add{color:#4caf50}
+.card-actions{display:flex;gap:3px;flex-shrink:0}
+</style>
+{% endblock %}
+{% block scripts %}
+<script>
+let originalText='',optimizedText='',diffItems=[],streaming=false;
+
+async function step1_detect(){
+    const text=document.getElementById('text-input').value;if(!text)return;
+    document.getElementById('detect-card').style.display='block';
+    document.getElementById('detect-result').innerHTML='<p class="muted">检测中...</p>';
+    try{
+        const r=await fetch('/api/v1/anti-ai/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+        const d=await r.json();
+        const cls=d.ai_score>0.7?'ok':(d.ai_score>0.4?'warn':'bad');
+        let h='<div class="score-display"><div class="score-circle '+cls+'"><span class="score-number">'+(d.ai_score*100).toFixed(0)+'</span></div><p>'+(d.ai_score>0.7?'像人类':(d.ai_score>0.4?'有AI痕迹':'高度疑似AI'))+'</p></div>';
+        if(d.pattern_matches&&d.pattern_matches.length){h+='<div class="plugin-tags">';for(const m of d.pattern_matches)h+='<span class="tag severity-'+m.severity+'">'+m.category+' ('+m.count+')</span>';h+='</div>';}
+        document.getElementById('detect-result').innerHTML=h;
+    }catch(e){document.getElementById('detect-result').innerHTML='<p class="error">检测失败: '+e.message+'</p>';}
+}
+
+let _progressTimer=null;
+async function step2_humanize(){
+    originalText=document.getElementById('text-input').value;if(!originalText)return;
+    const btn=event.target; btn.disabled=true; btn.textContent='改写中...';
+    document.getElementById('merge-card').style.display='block';
+    document.getElementById('col-diffs').innerHTML='<p class="muted">AI 改写中...</p>';
+    document.getElementById('col-final').value='';
+    const bar=document.getElementById('progress-bar'); bar.style.display='block';
+    const fill=document.getElementById('progress-fill'); fill.style.width='0';
+    // Simulated progress
+    let pct=0; _progressTimer=setInterval(()=>{pct=Math.min(pct+Math.random()*8,90);fill.style.width=pct+'%';},500);
+    try{
+        const r=await fetch('/api/v1/anti-ai/humanize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:originalText,mode:'standard'})});
+        const d=await r.json(); clearInterval(_progressTimer);
+        optimizedText=d.content||originalText; btn.disabled=false; btn.textContent='2.AI改写';
+        if(!d.changed){document.getElementById('col-diffs').innerHTML='<p class="muted">改写未生效: '+(d.error||d.note||'')+'</p>'; bar.style.display='none'; return;}
+        fill.style.width='100%';
+        setTimeout(()=>{bar.style.display='none';buildDiffView();},300);
+    }catch(e){clearInterval(_progressTimer);document.getElementById('col-diffs').innerHTML='<p class="error">改写失败: '+e.message+'</p>'; bar.style.display='none'; btn.disabled=false; btn.textContent='2.AI改写';}
+}
+
+function buildDiffView(){
+    const oParas=originalText.split(/\n\n+/); const nParas=optimizedText.split(/\n\n+/);
+    diffItems=[]; let added=0,changed=0,removed=0;
+    const maxP=Math.max(oParas.length,nParas.length);
+    for(let i=0;i<maxP;i++){
+        const op=i<oParas.length?oParas[i].trim():'',np=i<nParas.length?nParas[i].trim():'';
+        if(!op&&!np)continue;
+        if(op===np){diffItems.push({orig:op,opt:np,same:true,status:'same'});}
+        else{diffItems.push({orig:op,opt:np,same:false,status:'pending',index:i});if(!op)added++;else if(!np)removed++;else changed++;}
+        if(i<maxP-1)diffItems.push({orig:'\n\n',opt:'\n\n',same:true,status:'same',sep:true});
+    }
+    document.getElementById('merge-stats').textContent='变更:'+changed+' 新增:'+added+' 删除:'+removed;
+    let origHTML='';
+    for(const item of diffItems){if(item.sep){origHTML+='<br><br>';continue;}if(item.same)origHTML+=esc(item.orig).replace(/\n/g,'<br>');else origHTML+='<span class="hl-delete">'+esc(item.orig||'(空)').replace(/\n/g,'<br>')+'</span>';}
+    document.getElementById('col-original').innerHTML=origHTML||'<p class="muted">无内容</p>';
+    let diffHTML='';
+    for(const item of diffItems){if(item.same)continue;diffHTML+='<div class="diff-card status-'+item.status+'" id="card-'+item.index+'" onclick="toggleCard('+item.index+')"><div class="card-status">'+statusIcon(item.status)+'</div><div class="card-content"><div class="card-row orig-row"><span class="card-tag del">-</span>'+esc(item.orig||'(新增)')+'</div><div class="card-row opt-row"><span class="card-tag add">+</span>'+esc(item.opt||'(删除)')+'</div></div><div class="card-actions"><button class="btn btn-sm" onclick="event.stopPropagation();acceptCard('+item.index+')">采纳</button><button class="btn btn-sm" onclick="event.stopPropagation();rejectCard('+item.index+')">忽略</button><button class="btn btn-sm" onclick="event.stopPropagation();editCard('+item.index+')">编辑</button></div></div>';}
+    document.getElementById('col-diffs').innerHTML=diffHTML||'<p class="success">无差异</p>';
+    batchAccept();
+}
+function statusIcon(s){return s==='accepted'?'OK':(s==='rejected'?'NO':(s==='edited'?'ED':'..'));}
+function toggleCard(idx){const item=diffItems.find(d=>d.index===idx);if(!item||item.same)return;if(item.status==='pending'||item.status==='rejected')acceptCard(idx);else rejectCard(idx);}
+function acceptCard(idx){const item=diffItems.find(d=>d.index===idx);if(!item||item.same)return;item.status='accepted';updateCard(idx);updatePreview();}
+function rejectCard(idx){const item=diffItems.find(d=>d.index===idx);if(!item||item.same)return;item.status='rejected';updateCard(idx);updatePreview();}
+function editCard(idx){const item=diffItems.find(d=>d.index===idx);if(!item||item.same)return;const custom=prompt('手动编辑:',item.status==='accepted'?item.opt:item.orig);if(custom!==null){item.custom=custom;item.status='edited';updateCard(idx);updatePreview();}}
+function updateCard(idx){const item=diffItems.find(d=>d.index===idx);if(!item)return;const card=document.getElementById('card-'+idx);if(!card)return;card.className='diff-card status-'+item.status;card.querySelector('.card-status').textContent=statusIcon(item.status);}
+function updatePreview(){let r='';for(const item of diffItems){if(item.same||item.sep)r+=item.orig;else if(item.status==='accepted')r+=item.opt;else if(item.status==='edited')r+=(item.custom||item.orig);else r+=item.orig;}document.getElementById('col-final').value=r;}
+function batchAccept(){diffItems.forEach(d=>{if(!d.same)d.status='accepted';});for(const item of diffItems){if(!item.same)updateCard(item.index);}updatePreview();}
+function batchReject(){diffItems.forEach(d=>{if(!d.same)d.status='rejected';});for(const item of diffItems){if(!item.same)updateCard(item.index);}updatePreview();}
+function applyMerge(){const r=document.getElementById('col-final').value;if(!r)return;document.getElementById('text-input').value=r;document.getElementById('char-count').textContent=r.length+' 字';document.getElementById('merge-card').style.display='none';toast('合并完成','success');}
+function esc(s){return s.replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+</script>
+{% endblock %}
