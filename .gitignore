@@ -36,6 +36,7 @@ novel_output/*/
 data/
 *.log
 logs/
+session-log.md
 
 # Neo4j
 neo4j/data/

@@ -202,6 +202,7 @@ async def audit_foreshadows(project_id: str):
             "unpaid_count": len(unpaid),
             "payoff_rate": round(len(paid) / total * 100, 1) if total > 0 else 0,
             "unpaid": unpaid,
+            "paid": paid,
         }
     except FileNotFoundError:
         return {
@@ -210,6 +211,7 @@ async def audit_foreshadows(project_id: str):
             "unpaid_count": 0,
             "payoff_rate": 0,
             "unpaid": [],
+            "paid": [],
             "note": "暂无伏笔数据",
         }
 

@@ -329,7 +329,7 @@ async def test_e2e_full_pipeline(api_key):
     results["final_ai_score"] = quality["final_score"]
 
     # 保存
-    await kernel.write_project_file(pid, "chapters/ch_0001.md", content)
+    await kernel.write_project_file(pid, "chapters/ch_v01_0001.md", content)
     assert len(content) >= 500, f"Chapter too short: {len(content)} chars"
     assert quality["final_score"] >= 0.4, f"AI score too low: {quality['final_score']}"
     print(f"   ✓ {results['chapter_time']}s, {len(content)} 字")

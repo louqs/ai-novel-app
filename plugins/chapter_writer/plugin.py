@@ -848,11 +848,12 @@ class ChapterWriterPlugin:
         content = self._add_frontmatter(content, ch_num, ch_title, platform)
 
         # 构建 Chapter
+        vol_num = chapter_node.get("volume_number", 1)
         chapter = Chapter(
             metadata=ChapterMetadata(
-                chapter_id=f"ch_{ch_num:04d}",
+                chapter_id=f"ch_v{vol_num:02d}_{ch_num:04d}",
                 chapter_number=ch_num,
-                volume_number=chapter_node.get("volume_number", 1),
+                volume_number=vol_num,
                 title=chapter_node.get("title", f"第{ch_num}章"),
                 word_count=len(content),
                 platform=platform,

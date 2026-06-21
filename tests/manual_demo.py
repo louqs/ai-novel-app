@@ -147,12 +147,12 @@ async def test_event_bus_plugins() -> None:
         event_type=BuiltInEvents.PIPELINE_CHAPTER_ACCEPTED,
         category=EventCategory.PIPELINE,
         source="orchestrator",
-        payload={"chapter_id": "ch_0001", "word_count": 3200},
+        payload={"chapter_id": "ch_v01_0001", "word_count": 3200},
     ))
     await bus.publish(EventEnvelope(
         event_type=BuiltInEvents.PIPELINE_CHAPTER_ACCEPTED,
         category=EventCategory.PIPELINE,
-        payload={"chapter_id": "ch_0002"},
+        payload={"chapter_id": "ch_v01_0002"},
     ))
 
     await asyncio.sleep(0.2)
@@ -161,7 +161,7 @@ async def test_event_bus_plugins() -> None:
     print(f"  章节: {received_events}")
 
     assert len(received_events) == 2
-    assert "ch_0001" in received_events
+    assert "ch_v01_0001" in received_events
     print("  ✓ 通过: 插件通过事件总线收到了2个章节完成通知")
 
     await pm.unload("test-listener")
@@ -330,7 +330,7 @@ async def test_full_pipeline() -> None:
 
     # 用一段测试文本跑门禁
     test_chapter = {
-        "chapter_id": "ch_0001",
+        "chapter_id": "ch_v01_0001",
         "chapter_number": 1,
         "content": (
             "他走进院子。月光正亮。\n"

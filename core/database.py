@@ -32,6 +32,7 @@ class DatabaseManager:
                 )""",
                 """CREATE TABLE IF NOT EXISTS chapters (
                     id TEXT PRIMARY KEY, project_id TEXT, chapter_number INTEGER,
+                    volume_number INTEGER DEFAULT 1,
                     title TEXT, content TEXT, word_count INTEGER DEFAULT 0,
                     ai_score REAL DEFAULT 0, created_at TEXT
                 )""",
@@ -46,8 +47,19 @@ class DatabaseManager:
                     name TEXT PRIMARY KEY, type TEXT, base_url TEXT,
                     api_key TEXT, default_model TEXT, models TEXT, enabled INTEGER DEFAULT 1
                 )""",
+                """CREATE TABLE IF NOT EXISTS model_settings (
+                    tier TEXT PRIMARY KEY, provider TEXT, model TEXT, updated_at TEXT
+                )""",
             ]:
                 await db.execute(sql)
+
+            # 迁移：确保 volume_number 列存在
+            cursor = await db.execute("PRAGMA table_info(chapters)")
+            columns = [row[1] for row in await cursor.fetchall()]
+            if "volume_number" not in columns:
+                await db.execute("ALTER TABLE chapters ADD COLUMN volume_number INTEGER DEFAULT 1")
+                logger.info("数据库迁移: chapters 表添加 volume_number 列")
+
             await db.execute("CREATE INDEX IF NOT EXISTS idx_ch ON chapters(project_id, chapter_number)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_char ON characters(project_id)")
             await db.commit()
@@ -113,18 +125,18 @@ class DatabaseManager:
 
     # ---- Chapter ----
 
-    async def save_chapter(self, cid: str, pid: str, num: int, title: str, content: str, score: float = 0) -> None:
+    async def save_chapter(self, cid: str, pid: str, num: int, title: str, content: str, score: float = 0, volume: int = 1) -> None:
         await self._exec("DELETE FROM chapters WHERE id=?", (cid,))
         await self._exec(
-            "INSERT INTO chapters (id,project_id,chapter_number,title,content,word_count,ai_score,created_at) VALUES (?,?,?,?,?,?,?,?)",
-            (cid, pid, num, title, content, len(content), score, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            "INSERT INTO chapters (id,project_id,chapter_number,volume_number,title,content,word_count,ai_score,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (cid, pid, num, volume, title, content, len(content), score, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
 
-    async def get_chapter(self, pid: str, num: int) -> dict | None:
-        rows = await self._fetch("SELECT * FROM chapters WHERE project_id=? AND chapter_number=?", (pid, num))
+    async def get_chapter(self, pid: str, num: int, volume: int = 1) -> dict | None:
+        rows = await self._fetch("SELECT * FROM chapters WHERE project_id=? AND chapter_number=? AND volume_number=?", (pid, num, volume))
         return rows[0] if rows else None
 
     async def list_chapters(self, pid: str) -> list[dict]:
-        return await self._fetch("SELECT * FROM chapters WHERE project_id=? ORDER BY chapter_number", (pid,))
+        return await self._fetch("SELECT * FROM chapters WHERE project_id=? ORDER BY volume_number, chapter_number", (pid,))
 
     # ---- Character / Settings ----
 
@@ -163,6 +175,27 @@ class DatabaseManager:
                 except Exception:
                     r["models"] = []
         return rows
+
+    # ---- Model Settings (Tier 配置持久化) ----
+
+    async def save_tier_setting(self, tier: str, provider: str, model: str) -> None:
+        """保存 tier 配置到数据库."""
+        await self._exec(
+            "INSERT OR REPLACE INTO model_settings (tier, provider, model, updated_at) VALUES (?,?,?,?)",
+            (tier, provider, model, datetime.now().isoformat())
+        )
+
+    async def load_tier_settings(self) -> dict[str, dict[str, str]]:
+        """加载所有 tier 配置."""
+        rows = await self._fetch("SELECT tier, provider, model FROM model_settings")
+        return {r["tier"]: {"provider": r["provider"], "model": r["model"]} for r in rows}
+
+    async def get_tier_setting(self, tier: str) -> dict[str, str] | None:
+        """获取单个 tier 配置."""
+        rows = await self._fetch("SELECT provider, model FROM model_settings WHERE tier=?", (tier,))
+        if rows:
+            return {"provider": rows[0]["provider"], "model": rows[0]["model"]}
+        return None
 
     async def save_settings(self, pid: str, data: dict) -> None:
         await self._exec("DELETE FROM settings WHERE project_id=?", (pid,))

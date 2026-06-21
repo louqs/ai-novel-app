@@ -123,20 +123,31 @@ class GraphManagerPlugin:
         """从已有章节中通过 LLM 自动提取人物和关系。"""
         # 收集所有章节内容
         all_content = ""
-        ch_num = 1
-        while True:
-            try:
-                if self._kernel.db:
-                    ch = await self._kernel.db.get_chapter(project_id, ch_num)
-                    if ch:
-                        all_content += ch.get("content", "")[:3000] + "\n\n"
-                else:
-                    content = await self._kernel.read_project_file(project_id, f"chapters/ch_{ch_num:04d}.md")
-                    all_content += content[:3000] + "\n\n"
-                ch_num += 1
-                if ch_num > 10:
-                    break
-            except Exception:
+
+        # 从 progress 获取所有卷和章节信息
+        progress = await self._kernel.context().get(f"project:{project_id}", "progress", {})
+        chapter_count = 0
+        for vol in progress.get("volumes", []):
+            vol_num = vol.get("volume_number", 1)
+            for ch in vol.get("chapters", []):
+                ch_num = ch.get("chapter_number", 0)
+                if not ch_num:
+                    continue
+                try:
+                    if self._kernel.db:
+                        ch_data = await self._kernel.db.get_chapter(project_id, ch_num, vol_num)
+                        if ch_data:
+                            all_content += ch_data.get("content", "")[:3000] + "\n\n"
+                    else:
+                        chapter_id = f"ch_v{vol_num:02d}_{ch_num:04d}"
+                        content = await self._kernel.read_project_file(project_id, f"chapters/{chapter_id}.md")
+                        all_content += content[:3000] + "\n\n"
+                    chapter_count += 1
+                    if chapter_count > 10:
+                        break
+                except Exception:
+                    pass
+            if chapter_count > 10:
                 break
 
         if not all_content.strip():

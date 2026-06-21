@@ -243,10 +243,10 @@ async def test_data_models_validation() -> None:
 
     # 章节
     chapter = Chapter(
-        metadata=ChapterMetadata(chapter_id="ch_0001", chapter_number=1),
+        metadata=ChapterMetadata(chapter_id="ch_v01_0001", chapter_number=1),
         content="测试正文",
     )
-    assert chapter.metadata.chapter_id == "ch_0001"
+    assert chapter.metadata.chapter_id == "ch_v01_0001"
 
 
 @pytest.mark.asyncio

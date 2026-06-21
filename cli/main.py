@@ -225,6 +225,7 @@ async def cmd_generate(args):
     """生成章节."""
     pid = args.project
     ch_num = args.chapter
+    vol_num = getattr(args, 'volume', 1) or 1
     if not ch_num:
         error("请指定章节号: novel generate --chapter 1")
         return
@@ -240,7 +241,7 @@ async def cmd_generate(args):
             error("请指定项目: novel generate --project <ID> --chapter 1")
             return
 
-    header(f"生成第{ch_num}章 — {pid}")
+    header(f"生成第{vol_num}卷第{ch_num}章 — {pid}")
     kernel = await get_kernel()
 
     try:
@@ -249,14 +250,18 @@ async def cmd_generate(args):
         error("正文撰写引擎未加载")
         return
 
-    # 获取大纲节点
-    outline_node = {"chapter_number": ch_num, "volume_number": 1, "title": f"第{ch_num}章", "summary": ""}
+    # 获取大纲节点 — 同时匹配 volume_number 和 chapter_number
+    outline_node = {"chapter_number": ch_num, "volume_number": vol_num, "title": f"第{vol_num}卷第{ch_num}章", "summary": ""}
     progress = await kernel.context().get(f"project:{pid}", "progress", {})
     for vol in progress.get("volumes", []):
+        if vol.get("volume_number") != vol_num:
+            continue
         for ch in vol.get("chapters", []):
             if ch.get("chapter_number") == ch_num:
                 outline_node = ch
                 break
+        if outline_node.get("volume_number") == vol_num:
+            break
 
     platform = await kernel.context().get(f"project:{pid}", "platform", "fanqie")
 
@@ -283,9 +288,14 @@ async def cmd_generate(args):
         elapsed = time.time() - t0
         print(f"\n\n  {c(f'完成 ({elapsed:.0f}s, {len(full)}字)', 'dim')}")
 
-        chapter_id = f"ch_{ch_num:04d}"
+        chapter_id = f"ch_v{vol_num:02d}_{ch_num:04d}"
         await kernel.write_project_file(pid, f"chapters/{chapter_id}.md", full)
         return
+
+    # 获取上一章摘要 — 使用卷+章组合键
+    prev_summary = ""
+    if ch_num > 1:
+        prev_summary = await kernel.context().get(f"project:{pid}", f"summary_vol{vol_num}_ch{ch_num - 1}", "")
 
     info(f"正在撰写 (预计 30-90s)...")
     t0 = time.time()
@@ -294,7 +304,7 @@ async def cmd_generate(args):
         context={
             "settings": await kernel.context().get_namespace(f"project:{pid}"),
             "characters": await kernel.context().get(f"project:{pid}", "characters", {}),
-            "previous_chapters_summary": await kernel.context().get(f"project:{pid}", f"summary_ch_{ch_num - 1}", ""),
+            "previous_chapters_summary": prev_summary,
         },
         platform=platform,
         min_ai_score=0.70,
@@ -306,10 +316,10 @@ async def cmd_generate(args):
     quality = result["quality"]
     content = chapter.content if hasattr(chapter, 'content') else str(chapter)
 
-    # 保存
-    chapter_id = f"ch_{ch_num:04d}"
+    # 保存 — 使用卷+章组合键
+    chapter_id = f"ch_v{vol_num:02d}_{ch_num:04d}"
     await kernel.write_project_file(pid, f"chapters/{chapter_id}.md", content)
-    await kernel.context().set(f"project:{pid}", f"summary_ch_{ch_num}", content[:200])
+    await kernel.context().set(f"project:{pid}", f"summary_vol{vol_num}_ch{ch_num}", content[:200])
 
     # 输出
     print(f"\n  {c('━' * 40, 'dim')}")
@@ -844,6 +854,7 @@ def main():
     p_gen = sub.add_parser("generate", help="生成章节")
     p_gen.add_argument("--project", "-p", help="项目ID")
     p_gen.add_argument("--chapter", "-c", type=int, required=True, help="章节号")
+    p_gen.add_argument("--volume", "-V", type=int, default=1, help="卷号 (默认1)")
     p_gen.add_argument("--stream", "-s", action="store_true", help="流式输出")
 
     # check

@@ -11,6 +11,7 @@ router = APIRouter(tags=["stream"])
 class StreamChapterReq(BaseModel):
     project_id: str = ""
     chapter_number: int = Field(..., ge=1)
+    volume_number: int = Field(default=1, ge=1)
 
 
 @router.post("/api/v1/stream/chapter")
@@ -19,6 +20,7 @@ async def stream_chapter(data: StreamChapterReq):
     kernel = await get_kernel()
     pid = data.project_id
     ch_num = data.chapter_number
+    vol_num = data.volume_number
 
     async def gen():
         yield f"data: {json.dumps({'status':'start'})}\n\n"
@@ -31,25 +33,27 @@ async def stream_chapter(data: StreamChapterReq):
             platform = settings.get("platform", "fanqie") if settings else "fanqie"
             progress = settings.get("progress", {}) if settings else {}
 
-            node = {"chapter_number": ch_num, "title": f"第{ch_num}章", "summary": ""}
+            node = {"chapter_number": ch_num, "volume_number": vol_num, "title": f"第{ch_num}章", "summary": ""}
             for vol in progress.get("volumes", []):
-                for ch in vol.get("chapters", []):
-                    if ch.get("chapter_number") == ch_num:
-                        node = ch; break
+                if vol.get("volume_number") == vol_num:
+                    for ch in vol.get("chapters", []):
+                        if ch.get("chapter_number") == ch_num:
+                            node = ch; break
+                    break
 
-            # 上下文摘要——提供前情但不强制衔接
+            # 上下文摘要——提供前情但不强制衔接（按卷号隔离）
             prev = ""
             if ch_num > 1 and kernel.db:
-                # 上一章结尾（场景状态参考——不需要强制衔接）
-                prev_ch = await kernel.db.get_chapter(pid, ch_num - 1)
+                # 上一章结尾（同卷内，场景状态参考——不需要强制衔接）
+                prev_ch = await kernel.db.get_chapter(pid, ch_num - 1, vol_num)
                 if prev_ch:
                     prev_content = prev_ch.get("content", "")
                     last_part = prev_content[-400:] if len(prev_content) > 400 else prev_content
-                    prev = f"【第{ch_num-1}章结尾（供参考，不必强制衔接）】\n{last_part}\n\n"
-                # 前几章摘要
+                    prev = f"【第{vol_num}卷第{ch_num-1}章结尾（供参考，不必强制衔接）】\n{last_part}\n\n"
+                # 前几章摘要（同卷内）
                 summaries = []
                 for n in range(max(1, ch_num - 4), ch_num):
-                    ch = await kernel.db.get_chapter(pid, n)
+                    ch = await kernel.db.get_chapter(pid, n, vol_num)
                     if ch:
                         content = ch.get("content", "")
                         if len(content) > 150:
@@ -76,9 +80,9 @@ async def stream_chapter(data: StreamChapterReq):
                 yield f"data: {json.dumps({'token': token})}\n\n"
 
             # 保存到数据库 + 文件
-            cid = f"ch_{ch_num:04d}"
+            cid = f"ch_v{vol_num:02d}_{ch_num:04d}"
             if kernel.db:
-                await kernel.db.save_chapter(cid, pid, ch_num, node.get("title", f"第{ch_num}章"), full)
+                await kernel.db.save_chapter(cid, pid, ch_num, node.get("title", f"第{ch_num}章"), full, volume=vol_num)
                 # 更新项目当前进度
                 await kernel.db.update_project(pid, {"current_chapter": max(ch_num, 0), "updated_at": ""})
             await kernel.write_project_file(pid, f"chapters/{cid}.md", full)

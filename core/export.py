@@ -189,25 +189,22 @@ class NovelExporter:
         """收集项目所有章节。"""
         kernel = self._kernel
         chapters = []
-        ch_num = 1
 
-        while True:
-            chapter_id = f"ch_{ch_num:04d}"
-            try:
-                content = await kernel.read_project_file(project_id, f"chapters/{chapter_id}.md")
-                # 尝试从 progress 获取标题
-                title = ""
-                progress = await kernel.context().get(f"project:{project_id}", "progress", {})
-                for vol in progress.get("volumes", []):
-                    for ch in vol.get("chapters", []):
-                        if ch.get("chapter_number") == ch_num:
-                            title = ch.get("title", "")
-                            break
-
-                chapters.append({"num": ch_num, "title": title, "content": content, "id": chapter_id})
-                ch_num += 1
-            except FileNotFoundError:
-                break
+        # 从 progress 获取所有卷和章节信息
+        progress = await kernel.context().get(f"project:{project_id}", "progress", {})
+        for vol in progress.get("volumes", []):
+            vol_num = vol.get("volume_number", 1)
+            for ch in vol.get("chapters", []):
+                ch_num = ch.get("chapter_number", 0)
+                if not ch_num:
+                    continue
+                chapter_id = f"ch_v{vol_num:02d}_{ch_num:04d}"
+                try:
+                    content = await kernel.read_project_file(project_id, f"chapters/{chapter_id}.md")
+                    title = ch.get("title", "")
+                    chapters.append({"num": ch_num, "volume": vol_num, "title": title, "content": content, "id": chapter_id})
+                except FileNotFoundError:
+                    pass
 
         return chapters
 

@@ -95,14 +95,21 @@ class WritingCoachPlugin:
         """分析整本小说质量。"""
         kernel = self._kernel
         chapters = []
-        ch_num = 1
-        while True:
-            try:
-                content = await kernel.read_project_file(project_id, f"chapters/ch_{ch_num:04d}.md")
-                chapters.append({"num": ch_num, "content": content})
-                ch_num += 1
-            except Exception:
-                break
+
+        # 从 progress 获取所有卷和章节信息
+        progress = await kernel.context().get(f"project:{project_id}", "progress", {})
+        for vol in progress.get("volumes", []):
+            vol_num = vol.get("volume_number", 1)
+            for ch in vol.get("chapters", []):
+                ch_num = ch.get("chapter_number", 0)
+                if not ch_num:
+                    continue
+                chapter_id = f"ch_v{vol_num:02d}_{ch_num:04d}"
+                try:
+                    content = await kernel.read_project_file(project_id, f"chapters/{chapter_id}.md")
+                    chapters.append({"num": ch_num, "volume": vol_num, "content": content})
+                except Exception:
+                    pass
 
         if not chapters:
             return {"error": "没有章节可分析"}

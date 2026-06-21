@@ -15,6 +15,7 @@ router = APIRouter(tags=["workbench"])
 
 class ChapterSaveRequest(BaseModel):
     content: str
+    volume_number: int = 1
 
 
 # =============================================================================
@@ -90,17 +91,18 @@ async def generate_outline(project_id: str):
 async def save_chapter(project_id: str, ch_num: int, data: ChapterSaveRequest):
     """手动保存/更新章节内容."""
     kernel = await get_kernel()
-    chapter_id = f"ch_{ch_num:04d}"
+    vol = data.volume_number
+    chapter_id = f"ch_v{vol:02d}_{ch_num:04d}"
     # 数据库
     if kernel.db:
-        await kernel.db.save_chapter(chapter_id, project_id, ch_num, f"第{ch_num}章", data.content)
+        await kernel.db.save_chapter(chapter_id, project_id, ch_num, f"第{vol}卷第{ch_num}章", data.content, volume=vol)
         await kernel.db.update_project(project_id, {"current_chapter": max(ch_num,
             (await kernel.db.get_project(project_id) or {}).get("current_chapter", 0))})
     # 文件
     await kernel.write_project_file(project_id, f"chapters/{chapter_id}.md", data.content)
     ns = f"project:{project_id}"
     await kernel.context().set(ns, "current_chapter", max(ch_num, await kernel.context().get(ns, "current_chapter", 0)))
-    return {"status": "saved", "chapter_id": chapter_id, "word_count": len(data.content)}
+    return {"status": "saved", "chapter_id": chapter_id, "volume_number": vol, "word_count": len(data.content)}
 
 
 # =============================================================================

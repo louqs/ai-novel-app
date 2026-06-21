@@ -376,7 +376,7 @@ class TestQualityEvaluator:
         但他没想到，敌人还有后手——一把暗器从袖中飞出。
         """
 
-        chapter = {"chapter_id": "ch_0001", "content": content, "metadata": {"platform": "fanqie"}}
+        chapter = {"chapter_id": "ch_v01_0001", "content": content, "metadata": {"platform": "fanqie"}}
         context = {}
 
         result = asyncio.run(evaluator.evaluate(chapter, context))
@@ -396,7 +396,7 @@ class TestQualityEvaluator:
 
         content = "卷一中提到的那个设定，在这一章得到了验证。"
 
-        chapter = {"chapter_id": "ch_0001", "content": content, "metadata": {"platform": "fanqie"}}
+        chapter = {"chapter_id": "ch_v01_0001", "content": content, "metadata": {"platform": "fanqie"}}
         context = {}
 
         result = asyncio.run(evaluator.evaluate(chapter, context))
@@ -416,7 +416,7 @@ class TestQualityEvaluator:
 
         content = "他缓缓地走过来，不由得叹了口气。眼底闪过一丝光芒，心中升起莫名的情绪。"
 
-        chapter = {"chapter_id": "ch_0001", "content": content, "metadata": {"platform": "fanqie"}}
+        chapter = {"chapter_id": "ch_v01_0001", "content": content, "metadata": {"platform": "fanqie"}}
         context = {}
 
         result = asyncio.run(evaluator.evaluate(chapter, context))

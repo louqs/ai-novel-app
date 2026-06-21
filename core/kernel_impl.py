@@ -64,7 +64,7 @@ class Kernel(IKernelAPI):
             return self._model_registry
 
         config = self._config_manager.get_all()
-        registry = ModelRegistry(config)
+        registry = ModelRegistry(config, db=self.db)
 
         # 从 providers 配置加载
         providers_cfg = config.get("providers", [])
@@ -118,6 +118,9 @@ class Kernel(IKernelAPI):
                     logger.info("从数据库加载 Provider", name=name)
                 except Exception:
                     pass
+
+            # 从数据库加载保存的 tier 配置
+            await registry.load_from_database()
 
         self._model_registry = registry
         logger.info("模型注册中心已初始化", providers=len(registry.list_providers()))

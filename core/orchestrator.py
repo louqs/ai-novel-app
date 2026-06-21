@@ -42,6 +42,7 @@ class ChapterPipelineState(str, Enum):
 class PipelineContext:
     project_id: str = ""
     chapter_number: int = 0
+    volume_number: int = 1
     state: ChapterPipelineState = ChapterPipelineState.IDLE
     revision_round: int = 0
     max_revisions: int = 3
@@ -81,6 +82,7 @@ class OrchestrationEngine:
         project_id: str,
         chapter_number: int,
         *,
+        volume_number: int = 1,
         auto_retry: bool = True,
     ) -> dict[str, Any]:
         """执行单章生成流水线.
@@ -91,8 +93,9 @@ class OrchestrationEngine:
         ctx = PipelineContext(
             project_id=project_id,
             chapter_number=chapter_number,
+            volume_number=volume_number,
         )
-        key = f"{project_id}:{chapter_number}"
+        key = f"{project_id}:v{volume_number}:ch{chapter_number}"
         self._pipelines[key] = ctx
 
         try:
@@ -149,15 +152,19 @@ class OrchestrationEngine:
         """组装章节上下文."""
         kernel = self._kernel
 
-        # 获取大纲节点
+        # 获取大纲节点 — 同时匹配 volume_number 和 chapter_number
         try:
             progress_data = await kernel.context().get(f"project:{ctx.project_id}", "progress")
             if progress_data:
                 for vol in progress_data.get("volumes", []):
+                    if vol.get("volume_number") != ctx.volume_number:
+                        continue
                     for ch in vol.get("chapters", []):
                         if ch.get("chapter_number") == ctx.chapter_number:
                             ctx.outline_node = ch
                             break
+                    if ctx.outline_node:
+                        break
         except Exception:
             pass
 
@@ -198,13 +205,16 @@ class OrchestrationEngine:
         kernel = self._kernel
         chapter_writer = await kernel.get_plugin("chapter-writer")
 
-        # 构建上下文
+        # 构建上下文 — 使用卷+章组合键获取上一章摘要
+        prev_summary = ""
+        if ctx.chapter_number > 1:
+            prev_summary = await kernel.context().get(
+                f"project:{ctx.project_id}", f"summary_vol{ctx.volume_number}_ch{ctx.chapter_number - 1}", ""
+            )
         writer_context = {
             "settings": await kernel.context().get_namespace(f"project:{ctx.project_id}"),
             "characters": await kernel.context().get(f"project:{ctx.project_id}", "characters", {}),
-            "previous_chapters_summary": await kernel.context().get(
-                f"project:{ctx.project_id}", f"summary_ch_{ctx.chapter_number - 1}", ""
-            ),
+            "previous_chapters_summary": prev_summary,
             "rag_results": ctx.rag_results,
             "active_foreshadows": ctx.active_foreshadows,
         }
@@ -291,21 +301,24 @@ class OrchestrationEngine:
         """更新记忆 — 事实提取、伏笔更新、RAG 索引."""
         kernel = self._kernel
         ns = f"project:{ctx.project_id}"
+        vol = ctx.volume_number
+        ch = ctx.chapter_number
 
-        # 保存章节摘要
+        # 保存章节摘要 — 使用卷+章组合键
         content = chapter.get("content", "")
         summary = content[:200] + "..." if len(content) > 200 else content
-        await kernel.context().set(ns, f"summary_ch_{ctx.chapter_number}", summary)
+        await kernel.context().set(ns, f"summary_vol{vol}_ch{ch}", summary)
 
         # 更新进度
-        await kernel.context().set(ns, "current_chapter", ctx.chapter_number)
+        await kernel.context().set(ns, "current_chapter", ch)
+        await kernel.context().set(ns, "current_volume", vol)
 
         # 保存章节
-        chapter_id = chapter.get("chapter_id", f"ch_{ctx.chapter_number:04d}")
+        chapter_id = chapter.get("chapter_id", f"ch_v{vol:02d}_{ch:04d}")
         await kernel.write_project_file(
             ctx.project_id,
             f"chapters/{chapter_id}.md",
             chapter.get("content", ""),
         )
 
-        logger.info("记忆已更新", chapter=ctx.chapter_number)
+        logger.info("记忆已更新", volume=vol, chapter=ch)

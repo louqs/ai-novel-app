@@ -106,6 +106,7 @@ class RelationshipCreate(BaseModel):
 
 class ChapterGenerateRequest(BaseModel):
     chapter_number: int = Field(..., ge=1)
+    volume_number: int = Field(default=1, ge=1)
     auto_retry: bool = True
 
 

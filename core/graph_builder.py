@@ -35,6 +35,7 @@ class GraphBuilder:
         chapter_num: int,
         content: str,
         *,
+        volume_num: int = 1,
         character_names: list[str] | None = None,
     ) -> dict[str, int]:
         """从章节内容提取实体和关系，写入图谱。
@@ -58,7 +59,7 @@ class GraphBuilder:
             edges_added += 1
 
         # 3. 保存章节节点
-        chapter_id = f"ch_{project_id}_{chapter_num:04d}"
+        chapter_id = f"ch_v{volume_num:02d}_{chapter_num:04d}"
         await self._upsert_node({
             "id": chapter_id,
             "labels": "Chapter",

@@ -35,20 +35,24 @@ async def generate_chapter(project_id: str, data: ChapterGenerateRequest):
     """生成单章."""
     kernel = await get_kernel()
 
-    # 获取大纲节点
+    # 获取大纲节点 — 同时匹配 volume_number 和 chapter_number
     progress_raw = await kernel.context().get(f"project:{project_id}", "progress", {})
     outline_node = None
     for vol in progress_raw.get("volumes", []):
+        if vol.get("volume_number") != data.volume_number:
+            continue
         for ch in vol.get("chapters", []):
             if ch.get("chapter_number") == data.chapter_number:
                 outline_node = ch
                 break
+        if outline_node:
+            break
 
     if outline_node is None:
         outline_node = {
             "chapter_number": data.chapter_number,
-            "volume_number": 1,
-            "title": f"第{data.chapter_number}章",
+            "volume_number": data.volume_number,
+            "title": f"第{data.volume_number}卷第{data.chapter_number}章",
             "summary": "",
         }
 
@@ -65,6 +69,7 @@ async def generate_chapter(project_id: str, data: ChapterGenerateRequest):
     result = await engine.generate_chapter(
         project_id=project_id,
         chapter_number=data.chapter_number,
+        volume_number=data.volume_number,
         auto_retry=data.auto_retry,
     )
 
@@ -97,21 +102,21 @@ async def list_chapters(project_id: str):
 
 
 @router.get("/api/v1/projects/{project_id}/chapters/{ch_num}", response_model=dict)
-async def get_chapter(project_id: str, ch_num: int):
+async def get_chapter(project_id: str, ch_num: int, volume: int = 1):
     """获取章节."""
     kernel = await get_kernel()
-    chapter_id = f"ch_{ch_num:04d}"
+    chapter_id = f"ch_v{volume:02d}_{ch_num:04d}"
 
     # 优先数据库
     if kernel.db:
-        ch = await kernel.db.get_chapter(project_id, ch_num)
+        ch = await kernel.db.get_chapter(project_id, ch_num, volume)
         if ch:
-            return {"chapter_id": ch["id"], "chapter_number": ch_num, "title": ch.get("title",""), "content": ch["content"], "word_count": ch["word_count"]}
+            return {"chapter_id": ch["id"], "chapter_number": ch_num, "volume_number": volume, "title": ch.get("title",""), "content": ch["content"], "word_count": ch["word_count"]}
 
     # 降级文件
     try:
         content = await kernel.read_project_file(project_id, f"chapters/{chapter_id}.md")
-        return {"chapter_id": chapter_id, "chapter_number": ch_num, "content": content, "word_count": len(content)}
+        return {"chapter_id": chapter_id, "chapter_number": ch_num, "volume_number": volume, "content": content, "word_count": len(content)}
     except FileNotFoundError:
         raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="章节不存在")
 
@@ -273,18 +278,18 @@ async def get_detect_results(project_id: str):
 
 
 @router.get("/api/v1/projects/{project_id}/chapters/{ch_num}/gate-results", response_model=dict)
-async def get_gate_results(project_id: str, ch_num: int):
+async def get_gate_results(project_id: str, ch_num: int, volume: int = 1):
     """获取门禁报告."""
     kernel = await get_kernel()
     ns = f"project:{project_id}"
-    results = await kernel.context().get(ns, f"gate_results_ch_{ch_num}", [])
-    return {"chapter": ch_num, "results": results}
+    results = await kernel.context().get(ns, f"gate_results_vol{volume}_ch{ch_num}", [])
+    return {"chapter": ch_num, "volume": volume, "results": results}
 
 
 @router.post("/api/v1/projects/{project_id}/chapters/{ch_num}/override-gate", response_model=StatusResponse)
-async def override_gate(project_id: str, ch_num: int, data: GateOverrideRequest):
+async def override_gate(project_id: str, ch_num: int, data: GateOverrideRequest, volume: int = 1):
     """强制通过门禁."""
     kernel = await get_kernel()
     ns = f"project:{project_id}"
-    await kernel.context().set(ns, f"gate_overridden_ch_{ch_num}", True)
-    return StatusResponse(message=f"第{ch_num}章门禁已手动通过，原因: {data.reason}")
+    await kernel.context().set(ns, f"gate_overridden_vol{volume}_ch{ch_num}", True)
+    return StatusResponse(message=f"第{volume}卷第{ch_num}章门禁已手动通过，原因: {data.reason}")

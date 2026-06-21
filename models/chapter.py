@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 class ChapterMetadata(BaseModel):
     """章节元数据."""
 
-    chapter_id: str = Field(..., pattern=r"^ch_\d{4,}$", description="如 ch_0001")
+    chapter_id: str = Field(..., pattern=r"^ch_v\d{2}_\d{4,}$", description="如 ch_v01_0001")
     chapter_number: int = Field(..., ge=1)
     volume_number: int = Field(default=1, ge=1)
     title: str = Field(default="")

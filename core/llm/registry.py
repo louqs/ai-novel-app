@@ -45,12 +45,13 @@ class ModelRegistry:
         LLMTier → (provider_name, model_name) → BaseLLMAdapter → API 调用
     """
 
-    def __init__(self, config: dict[str, Any] | None = None) -> None:
+    def __init__(self, config: dict[str, Any] | None = None, db: Any = None) -> None:
         self._adapters: dict[str, BaseLLMAdapter] = {}
         # _tier_map[tier] = {"provider": str, "model": str}
         self._tier_map: dict[LLMTier, dict[str, str]] = {}
         self._config = config or {}
         self._lock = asyncio.Lock()
+        self._db = db  # 数据库实例
 
         # 从配置初始化 tier 映射
         self._load_tier_defaults()
@@ -133,6 +134,16 @@ class ModelRegistry:
         """
         async with self._lock:
             self.set_tier_model(tier, provider_name, model_name)
+
+            # 持久化到数据库
+            tier_str = tier.value if isinstance(tier, LLMTier) else tier
+            if self._db:
+                try:
+                    await self._db.save_tier_setting(tier_str, provider_name, model_name)
+                    logger.info("Tier 配置已保存到数据库", tier=tier_str, provider=provider_name, model=model_name)
+                except Exception as e:
+                    logger.warning("保存 tier 配置失败", error=str(e))
+
             # 验证连通性
             adapter = self._adapters.get(provider_name)
             healthy = False
@@ -140,7 +151,7 @@ class ModelRegistry:
             if adapter:
                 healthy, error_msg = await adapter.health_check()
             return {
-                "tier": tier.value if isinstance(tier, LLMTier) else tier,
+                "tier": tier_str,
                 "provider": provider_name,
                 "model": model_name,
                 "healthy": healthy,
@@ -304,3 +315,22 @@ class ModelRegistry:
                     "provider": cfg["provider"],
                     "model": cfg["model"],
                 }
+
+    async def load_from_database(self) -> None:
+        """从数据库加载保存的 tier 配置（覆盖配置文件的默认值）."""
+        if not self._db:
+            return
+        try:
+            saved_settings = await self._db.load_tier_settings()
+            for tier_name, settings in saved_settings.items():
+                try:
+                    tier = LLMTier(tier_name)
+                    self._tier_map[tier] = {
+                        "provider": settings["provider"],
+                        "model": settings["model"],
+                    }
+                    logger.info("从数据库加载 tier 配置", tier=tier_name, provider=settings["provider"], model=settings["model"])
+                except ValueError:
+                    pass
+        except Exception as e:
+            logger.warning("加载 tier 配置失败", error=str(e))
