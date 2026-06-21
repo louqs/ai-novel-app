@@ -44,6 +44,7 @@ class ProjectUpdate(BaseModel):
     genre_tags: list[str] | None = None
     one_liner: str | None = None
     status: str | None = None
+    length: str | None = None
 
 
 class ProjectResponse(BaseModel):

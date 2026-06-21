@@ -1,0 +1,23 @@
+name: short-story-writing
+version: 1.0.0
+type: knowledge_pack
+title: 短篇小说写作技巧
+description: 融合代入感塑造、三幕结构、节奏控制、人物构建等核心技法，适用于1-10万字的短篇小说创作
+author: AI Novel App
+tags:
+  - 短篇小说
+  - 三幕结构
+  - 代入感
+  - 节奏控制
+  - 人物构建
+platforms:
+  - fanqie
+  - qidian
+  - jinjiang
+genres:
+  - 通用
+created_at: '2026-06-21T12:00:00+00:00'
+updated_at: '2026-06-21T12:00:00+00:00'
+dependencies: []
+source_url: ''
+check_interval: monthly

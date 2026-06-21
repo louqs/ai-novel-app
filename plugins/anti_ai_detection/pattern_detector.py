@@ -959,7 +959,7 @@ class AIPatternDetector:
         """检测段落结构（AI倾向于段落长度均匀）."""
         paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
         if len(paragraphs) < 3:
-            return {"uniform": False, "suggestion": ""}
+            return {"is_uniform": False, "suggestion": ""}
 
         lengths = [len(p) for p in paragraphs]
         mean_len = sum(lengths) / len(lengths)

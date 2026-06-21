@@ -236,14 +236,16 @@ async def record_detect_result(data: dict):
     platform = data.get("platform", "天眼AI")
     notes = data.get("notes", "")
 
-    if not project_id:
-        return {"error": "需要提供 project_id"}
-
     kernel = await get_kernel()
-    project_dir = kernel.get_project_dir(project_id)
+
+    # 如果没有 project_id，使用全局目录
+    if project_id:
+        project_dir = kernel.get_project_dir(project_id)
+    else:
+        project_dir = kernel._data_dir / "global_detect"
 
     detector = OnlineDetector(project_dir=project_dir)
-    result = detector.record_result(project_id, chapter_num, ai_rate, platform, notes)
+    result = detector.record_result(project_id or "global", chapter_num, ai_rate, platform, notes)
 
     return {
         "recorded": True,

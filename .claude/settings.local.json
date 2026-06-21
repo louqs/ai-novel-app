@@ -16,7 +16,12 @@
       "Bash(curl *)",
       "Bash(python -m json.tool)",
       "Bash(.venv/Scripts/python -m pytest tests/test_quality.py -v)",
-      "Bash(awk 'NR>=56 && NR<=65' web/frontend/templates/anti_ai.html)"
+      "Bash(awk 'NR>=56 && NR<=65' web/frontend/templates/anti_ai.html)",
+      "Bash(npm init *)",
+      "Bash(npm install *)",
+      "Bash(npx playwright *)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'title: {d.get\\(\\\\\"title\\\\\"\\)}'\\); print\\(f'one_liner: {d.get\\(\\\\\"one_liner\\\\\"\\)}'\\)\")",
+      "Bash(python -c \"import sys,json; data=json.load\\(sys.stdin\\); print\\(json.dumps\\(data[0], indent=2, ensure_ascii=False\\)\\)\")"
     ]
   }
 }

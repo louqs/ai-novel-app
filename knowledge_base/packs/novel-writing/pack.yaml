@@ -1,0 +1,23 @@
+name: novel-writing
+version: 1.0.0
+type: knowledge_pack
+title: 中篇小说写作技巧
+description: 融合五幕结构、分卷管理、伏笔系统、人物关系网等核心技法，适用于10-50万字的中篇小说创作
+author: AI Novel App
+tags:
+  - 中篇小说
+  - 五幕结构
+  - 分卷管理
+  - 伏笔系统
+  - 人物关系
+platforms:
+  - fanqie
+  - qidian
+  - jinjiang
+genres:
+  - 通用
+created_at: '2026-06-21T12:00:00+00:00'
+updated_at: '2026-06-21T12:00:00+00:00'
+dependencies: []
+source_url: ''
+check_interval: monthly

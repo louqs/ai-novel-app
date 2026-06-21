@@ -12,10 +12,6 @@
     <form id="create-form" onsubmit="createProject(event)">
         <div class="form-row">
             <div class="form-group">
-                <label for="title">小说标题 *</label>
-                <input type="text" id="title" name="title" required maxlength="200" placeholder="如：重生之都市剑仙">
-            </div>
-            <div class="form-group">
                 <label for="platform">目标平台</label>
                 <select id="platform" name="platform">
                     <option value="fanqie">番茄小说</option>
@@ -27,20 +23,35 @@
             </div>
             <div class="form-group">
                 <label for="length">篇幅</label>
-                <select id="length" name="length">
+                <select id="length" name="length" onchange="updateWordRange()">
                     <option value="short">短篇 (1-5万字 · 约30章)</option>
                     <option value="medium" selected>中篇 (5-15万字 · 约150章)</option>
-                    <option value="long">长篇 (15万字以上 · 约500章)</option>
+                    <option value="long">长篇 (15-50万字 · 约500章)</option>
+                    <option value="extra_long">超长篇 (50万字以上)</option>
                 </select>
+            </div>
+            <div class="form-group">
+                <label>目标字数范围</label>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <input type="number" id="target_words_min" placeholder="最小字数" min="10000" max="10000000" style="flex:1">
+                    <span class="muted">~</span>
+                    <input type="number" id="target_words_max" placeholder="最大字数" min="10000" max="10000000" style="flex:1">
+                </div>
+                <span class="muted" style="font-size:11px">留空则按篇幅自动填充</span>
             </div>
         </div>
         <div class="form-group">
-            <label for="one_liner">一句话梗概</label>
-            <input type="text" id="one_liner" name="one_liner" placeholder="一句话说清你的故事">
+            <label for="one_liner">一句话梗概 *</label>
+            <input type="text" id="one_liner" name="one_liner" required placeholder="一句话说清你的故事，系统会根据梗概生成标题">
         </div>
         <div class="form-group">
             <label for="genre_tags">类型标签 (逗号分隔)</label>
             <input type="text" id="genre_tags" name="genre_tags" placeholder="如：都市, 修仙, 系统流">
+        </div>
+        <div id="generated-title" style="display:none;margin-bottom:12px;padding:8px;background:var(--surface2);border-radius:4px">
+            <span class="muted">系统生成标题：</span>
+            <strong id="title-preview"></strong>
+            <button type="button" class="btn btn-sm" onclick="regenerateTitle()" style="margin-left:8px">🔄 重新生成</button>
         </div>
         <button type="submit" class="btn btn-primary">✨ 创建项目</button>
     </form>
@@ -54,19 +65,73 @@
     </div>
 </div>
 
-<div class="card">
-    <h2>系统状态</h2>
-    <div id="health-info">
-        <p class="muted">加载中...</p>
+<!-- 编辑项目模态框 -->
+<div id="edit-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;justify-content:center;align-items:center">
+    <div style="background:var(--surface);padding:24px;border-radius:8px;width:500px;max-width:90%">
+        <h3>编辑项目</h3>
+        <input type="hidden" id="edit-project-id">
+        <div class="form-group">
+            <label>标题</label>
+            <input type="text" id="edit-title" style="width:100%">
+        </div>
+        <div class="form-group">
+            <label>一句话梗概</label>
+            <input type="text" id="edit-one-liner" style="width:100%">
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>平台</label>
+                <select id="edit-platform" style="width:100%">
+                    <option value="fanqie">番茄小说</option>
+                    <option value="qidian">起点中文网</option>
+                    <option value="jinjiang">晋江文学城</option>
+                    <option value="qimao">七猫小说</option>
+                    <option value="douban">豆瓣阅读</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>篇幅</label>
+                <select id="edit-length" style="width:100%">
+                    <option value="short">短篇</option>
+                    <option value="medium">中篇</option>
+                    <option value="long">长篇</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-group">
+            <label>类型标签</label>
+            <input type="text" id="edit-genre-tags" style="width:100%" placeholder="逗号分隔">
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+            <button class="btn" onclick="closeEditModal()">取消</button>
+            <button class="btn btn-primary" onclick="saveProjectEdit()">保存</button>
+        </div>
     </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-var platformNames={fanqie:'番茄小说',qidian:'起点中文网',jinjiang:'晋江文学城',qimao:'七猫小说',douban:'豆瓣阅读'};var lengthNames={short:'短篇',medium:'中篇',long:'长篇'};async function loadProjects(){
+var platformNames={fanqie:'番茄小说',qidian:'起点中文网',jinjiang:'晋江文学城',qimao:'七猫小说',douban:'豆瓣阅读'};
+var lengthNames={short:'短篇',medium:'中篇',long:'长篇',extra_long:'超长篇'};
+var lengthDefaults={
+    short:{min:10000,max:50000},
+    medium:{min:50000,max:150000},
+    long:{min:150000,max:500000},
+    extra_long:{min:50000,max:10000000}
+};
+var lastGeneratedTitle='';
+
+function updateWordRange(){
+    const length=document.getElementById('length').value;
+    const defaults=lengthDefaults[length]||lengthDefaults.medium;
+    document.getElementById('target_words_min').placeholder=`${Math.round(defaults.min/10000)}万`;
+    document.getElementById('target_words_max').placeholder=`${Math.round(defaults.max/10000)}万`;
+}
+
+async function loadProjects(){
     try {
-        const resp = await fetch('/api/v1/projects');
+        const resp = await fetch('/api/v1/projects?_=' + Date.now());
         const projects = await resp.json();
         const el = document.getElementById('project-list');
         if (projects.length === 0) {
@@ -81,6 +146,7 @@ var platformNames={fanqie:'番茄小说',qidian:'起点中文网',jinjiang:'晋�
                     <span class="muted">${lengthNames[p.length]||'中篇'} | ${p.current_chapter>0?'第'+p.current_chapter+'章':'未开始'}</span>
                 </div>
                 <div class="project-actions">
+                    <button class="btn btn-sm" onclick="editProject('${p.project_id}')">✏️ 编辑</button>
                     <a href="/workbench?project_id=${p.project_id}" class="btn btn-sm">✏️ 创作</a>
                     <a href="/coach?project_id=${p.project_id}" class="btn btn-sm">📊 教练</a>
                     <a href="/stats?project_id=${p.project_id}" class="btn btn-sm">📈 看板</a>
@@ -94,50 +160,70 @@ var platformNames={fanqie:'番茄小说',qidian:'起点中文网',jinjiang:'晋�
     }
 }
 
-async function loadHealth() {
-    try {
-        const resp = await fetch('/api/v1/admin/health');
-        const data = await resp.json();
-        document.getElementById('health-info').innerHTML = `
-            <div class="status-grid">
-                <div class="status-item"><span class="label">状态</span><span class="value ok">${data.status}</span></div>
-                <div class="status-item"><span class="label">版本</span><span class="value">${data.version}</span></div>
-                <div class="status-item"><span class="label">已加载插件</span><span class="value">${data.plugins_loaded} 个</span></div>
-            </div>
-            <div class="plugin-tags">
-                ${(data.plugins || []).map(p => `<span class="tag">${p}</span>`).join('')}
-            </div>
-        `;
-    } catch(e) {
-        document.getElementById('health-info').innerHTML = '<p class="error">无法连接服务器</p>';
+async function generateTitle(oneLiner, genreTags){
+    // 简单的标题生成逻辑：基于梗概和标签
+    const tags = genreTags.split(',').map(t=>t.trim()).filter(Boolean);
+    const tagStr = tags.length > 0 ? tags[0] : '';
+
+    // 从梗概中提取关键词
+    const keywords = oneLiner.split(/[，,。、]/).slice(0,2).join('');
+
+    if(tagStr && keywords){
+        return `${tagStr}：${keywords}`;
+    } else if(keywords){
+        return keywords;
+    } else {
+        return '新项目';
     }
+}
+
+async function regenerateTitle(){
+    const oneLiner = document.getElementById('one_liner').value;
+    const genreTags = document.getElementById('genre_tags').value;
+    if(!oneLiner){ alert('请先填写梗概'); return; }
+    const title = await generateTitle(oneLiner, genreTags);
+    document.getElementById('title-preview').textContent = title;
+    lastGeneratedTitle = title;
 }
 
 async function createProject(e) {
     e.preventDefault();
-    const btn = e.target.querySelector('button');
+    const btn = e.target.querySelector('button[type="submit"]');
     btn.disabled = true;
     btn.textContent = '创建中...';
 
     const form = document.getElementById('create-form');
     const tags = form.genre_tags.value.split(',').map(t => t.trim()).filter(Boolean);
+    const oneLiner = form.one_liner.value;
+
+    // 生成标题
+    const title = lastGeneratedTitle || await generateTitle(oneLiner, form.genre_tags.value);
+
+    // 计算目标字数范围
+    const defaults = lengthDefaults[form.length.value] || lengthDefaults.medium;
+    let targetWordsMin = parseInt(form.target_words_min.value) || defaults.min;
+    let targetWordsMax = parseInt(form.target_words_max.value) || defaults.max;
 
     try {
         const resp = await fetch('/api/v1/projects', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
-                title: form.title.value,
+                title: title,
                 platform: form.platform.value,
                 length: form.length.value,
-                one_liner: form.one_liner.value,
+                one_liner: oneLiner,
                 genre_tags: tags,
+                target_words_min: targetWordsMin,
+                target_words_max: targetWordsMax,
             })
         });
         const result = await resp.json();
         document.getElementById('create-status').innerHTML =
             `<p class="success">项目 "${result.title}" 创建成功!</p>`;
         form.reset();
+        document.getElementById('generated-title').style.display = 'none';
+        lastGeneratedTitle = '';
         loadProjects();
     } catch(e) {
         document.getElementById('create-status').innerHTML =
@@ -145,6 +231,49 @@ async function createProject(e) {
     }
     btn.disabled = false;
     btn.textContent = '✨ 创建项目';
+}
+
+async function editProject(pid){
+    try {
+        const resp = await fetch(`/api/v1/projects/${pid}`);
+        const proj = await resp.json();
+        document.getElementById('edit-project-id').value = pid;
+        document.getElementById('edit-title').value = proj.title || '';
+        document.getElementById('edit-one-liner').value = proj.one_liner || '';
+        document.getElementById('edit-platform').value = proj.platform || 'fanqie';
+        document.getElementById('edit-length').value = proj.length || 'medium';
+        document.getElementById('edit-genre-tags').value = (proj.genre_tags||[]).join(', ');
+        document.getElementById('edit-modal').style.display = 'flex';
+    } catch(e) { toast('加载失败', 'error'); }
+}
+
+function closeEditModal(){
+    document.getElementById('edit-modal').style.display = 'none';
+}
+
+async function saveProjectEdit(){
+    const pid = document.getElementById('edit-project-id').value;
+    const tags = document.getElementById('edit-genre-tags').value.split(',').map(t=>t.trim()).filter(Boolean);
+    try {
+        const resp = await fetch(`/api/v1/projects/${pid}`, {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                title: document.getElementById('edit-title').value,
+                one_liner: document.getElementById('edit-one-liner').value,
+                platform: document.getElementById('edit-platform').value,
+                length: document.getElementById('edit-length').value,
+                genre_tags: tags,
+            })
+        });
+        if(resp.ok){
+            closeEditModal();
+            await loadProjects();
+            toast('项目已更新', 'success');
+        } else {
+            toast('保存失败: ' + resp.statusText, 'error');
+        }
+    } catch(e) { toast('保存失败: ' + e.message, 'error'); }
 }
 
 async function deleteProject(btn) {
@@ -164,6 +293,6 @@ async function exportProject(btn){
 }
 
 loadProjects();
-loadHealth();
+updateWordRange();
 </script>
 {% endblock %}
