@@ -14,71 +14,7 @@
 </div>
 <div class="card"><h2>已安装</h2><div id="local-list"><p class="muted">加载中...</p></div></div>
 {% endblock %}
+
 {% block scripts %}
-<script>
-async function loadAll(){
-    try {
-        const cr=await fetch('/api/v1/packs/catalog'); const cd=await cr.json();
-        const lr=await fetch('/api/v1/packs/local'); const ld=await lr.json();
-        const installed=new Set((ld||[]).map(p=>p.name));
-        document.getElementById('catalog-list').innerHTML=(cd||[]).map(p=>{
-            const updatedAt=p.updated_at||p.updated||'';
-            const dateStr=updatedAt ? new Date(updatedAt).toLocaleDateString('zh-CN') : '未知';
-            return `<div class="model-card"><div class="model-info"><strong>${p.title}</strong><span class="muted" style="font-size:10px;margin-left:8px">v${p.version||'0.1.0'} · 更新: ${dateStr}</span><div class="muted">${p.description||''}</div></div><div class="model-actions">${installed.has(p.name)?'<span class="success">✅ 已安装</span>':'<button class="btn btn-sm" onclick="installPack(\''+p.name+'\')">安装</button>'}</div></div>`;
-        }).join('');
-        document.getElementById('local-list').innerHTML=(ld||[]).map(p=>{
-            const updatedAt=p.updated_at||'';
-            const dateStr=updatedAt ? new Date(updatedAt).toLocaleDateString('zh-CN') : '未知';
-            return `<div class="model-card"><div class="model-info"><strong>${p.title||p.name}</strong><span class="muted" style="font-size:10px;margin-left:8px">v${p.version||'0.1.0'} · ${dateStr}</span><div class="muted">${p.file_count||0} 个文件</div></div><div class="model-actions"><button class="btn btn-sm" onclick="uninstallPack(\''+p.name+'\')">卸载</button></div></div>`;
-        }).join('')||'<p class="muted">暂无</p>';
-    } catch(e){}
-}
-async function installPack(name){
-    try {
-        await fetch('/api/v1/packs/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:name})});
-        toast('已安装', 'success'); async function refreshPacks(){
-    toast('正在重建索引...','info');
-    for(const p of (await (await fetch('/api/v1/packs/catalog')).json())){
-        try { await fetch('/api/v1/packs/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:p.name})}); }
-        catch(e){}
-    }
-    toast('索引已刷新','success'); loadAll();
-}
-loadAll();
-    } catch(e){ toast('安装失败', 'error'); }
-}
-async function uninstallPack(name){
-    try {
-        await fetch('/api/v1/packs/uninstall/'+name,{method:'POST'});
-        toast('已卸载', 'success');
-        loadAll();
-    } catch(e){ toast('卸载失败', 'error'); }
-}
-async function updateKnowledge(){
-    if(!confirm('将通过 AI 生成最新的写作技巧、平台规则等内容，需要消耗少量 Token。继续？')) return;
-    const btn=event.target; btn.disabled=true; btn.textContent='更新中...';
-    try {
-        const resp=await fetch('/api/v1/packs/update',{method:'POST'});
-        const data=await resp.json();
-        if(data.status==='ok'){
-            const result=data.result||{};
-            const updated=Object.entries(result).filter(([k,v])=>v===true).map(([k])=>k);
-            toast(`更新完成: ${updated.join(', ')}`, 'success');
-        } else {
-            toast('更新失败', 'error');
-        }
-    } catch(e){ toast('更新失败: '+e, 'error'); }
-    btn.disabled=false; btn.textContent='🔄 更新知识库';
-    loadAll();
-}
-async function refreshPacks(){
-    toast('正在重建索引...','info');
-    for(const p of (await (await fetch('/api/v1/packs/catalog')).json())){
-        try { await fetch('/api/v1/packs/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:p.name})}); }
-        catch(e){}
-    }
-    toast('索引已刷新','success'); loadAll();
-}
-loadAll();
-</script>
+<script src="/static/packs_page.js"></script>
 {% endblock %}

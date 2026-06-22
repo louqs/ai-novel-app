@@ -4,10 +4,45 @@
 {% block content %}
 <div class="page-header"><h1>模型管理</h1><p class="subtitle">配置 API 和模型，测试连接，切换启用</p></div>
 
-<!-- 当前激活的模型 -->
+<!-- 分层路由配置 -->
 <div class="card">
-    <h2>当前激活</h2>
-    <div id="active-status" class="status-grid"></div>
+    <h2>分层路由配置</h2>
+    <p class="muted" style="font-size:12px;margin-bottom:12px">不同任务使用不同模型，好钢用在刀刃上</p>
+    <div style="margin-bottom:12px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px;line-height:1.8">
+        <div>🏆 <strong>高级模型</strong> — 写正文、润色文本 → 生成小说章节、改写段落、降重（用最好的模型，质量高）</div>
+        <div>⭐ <strong>标准模型</strong> — 规划大纲、审查质量、分析风格 → 生成大纲方案、检查一致性、写作教练（性价比高）</div>
+        <div>💰 <strong>经济模型</strong> — 提取关键词、建立知识索引 → 从章节提取人物/伏笔、给知识包建搜索索引（最便宜）</div>
+        <div style="margin-top:6px;color:var(--text-muted)">简单说：<strong>写作用好模型，杂活用便宜模型</strong></div>
+    </div>
+    <div id="tier-config" class="status-grid">
+        <div class="stat-card" style="padding:12px">
+            <div style="font-weight:600;margin-bottom:8px">🏆 高级模型（Premium）</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">负责写正文、润色文本 — 要求最高质量，用最好的模型</div>
+            <div style="display:flex;gap:6px;margin-bottom:4px">
+                <select id="tier-premium-provider" onchange="onTierProviderChange('premium')" style="flex:1;padding:4px;font-size:11px;background:var(--bg);border:1px solid var(--border);border-radius:4px"></select>
+                <select id="tier-premium-model" style="flex:1;padding:4px;font-size:11px;background:var(--bg);border:1px solid var(--border);border-radius:4px"></select>
+            </div>
+            <button class="btn btn-sm btn-primary" onclick="saveTier('premium')" style="width:100%">保存</button>
+        </div>
+        <div class="stat-card" style="padding:12px">
+            <div style="font-weight:600;margin-bottom:8px">⭐ 标准模型（Standard）</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">负责规划大纲、审查质量、分析风格 — 中等质量，性价比高</div>
+            <div style="display:flex;gap:6px;margin-bottom:4px">
+                <select id="tier-standard-provider" onchange="onTierProviderChange('standard')" style="flex:1;padding:4px;font-size:11px;background:var(--bg);border:1px solid var(--border);border-radius:4px"></select>
+                <select id="tier-standard-model" style="flex:1;padding:4px;font-size:11px;background:var(--bg);border:1px solid var(--border);border-radius:4px"></select>
+            </div>
+            <button class="btn btn-sm btn-primary" onclick="saveTier('standard')" style="width:100%">保存</button>
+        </div>
+        <div class="stat-card" style="padding:12px">
+            <div style="font-weight:600;margin-bottom:8px">💰 经济模型（Budget）</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">负责提取关键词、建立知识索引 — 简单任务，用最便宜的模型省成本</div>
+            <div style="display:flex;gap:6px;margin-bottom:4px">
+                <select id="tier-budget-provider" onchange="onTierProviderChange('budget')" style="flex:1;padding:4px;font-size:11px;background:var(--bg);border:1px solid var(--border);border-radius:4px"></select>
+                <select id="tier-budget-model" style="flex:1;padding:4px;font-size:11px;background:var(--bg);border:1px solid var(--border);border-radius:4px"></select>
+            </div>
+            <button class="btn btn-sm btn-primary" onclick="saveTier('budget')" style="width:100%">保存</button>
+        </div>
+    </div>
 </div>
 
 <!-- 已配置的模型列表 -->
@@ -33,11 +68,11 @@
 
 <!-- 编辑模态框 -->
 <div id="edit-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;">
-    <div style="background:#fff;margin:100px auto;padding:20px;width:500px;border-radius:8px;">
+    <div style="background:var(--surface);margin:100px auto;padding:20px;width:500px;border-radius:8px;">
         <h3>编辑模型</h3>
         <input type="hidden" id="edit-original-name">
         <div class="form-row">
-            <div class="form-group"><label>名称</label><input type="text" id="edit-name" readonly style="background:#f5f5f5;"></div>
+            <div class="form-group"><label>名称</label><input type="text" id="edit-name"></div>
             <div class="form-group"><label>Base URL</label><input type="text" id="edit-url"></div>
         </div>
         <div class="form-row">
@@ -53,146 +88,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-let providers = [];
-
-async function loadModels(){
-    try {
-        const r = await fetch('/api/v1/models');
-        const data = await r.json();
-        providers = data.providers || [];
-
-        // 激活状态
-        const tiers = data.tiers || {};
-        document.getElementById('active-status').innerHTML = ['premium','standard','budget'].map(t =>
-            `<div class="status-item"><span class="label">${t}</span><span class="value">${(tiers[t]||{}).provider||'?'}/${(tiers[t]||{}).model||'?'}</span></div>`
-        ).join('');
-
-        // 模型列表
-        const list = document.getElementById('model-list');
-        if (providers.length === 0) {
-            list.innerHTML = '<p class="muted">暂无模型，请在下方添加</p>';
-            return;
-        }
-        list.innerHTML = providers.map(p => {
-            const healthy = p.healthy === true ? '✅ 可用' : (p.healthy === false ? '❌ 失败' : '⚪ 未测');
-            const errorInfo = p.error ? `<div class="muted" style="color:#c00;font-size:12px;">${p.error}</div>` : '';
-            const active = p.name === (tiers.premium||{}).provider ? '(当前使用)' : '';
-            return `<div class="model-card">
-                <div class="model-info">
-                    <strong>${p.name}</strong> ${active}
-                    <div class="muted">${p.base_url||''} | 默认: ${p.default_model}</div>
-                    <div>模型: ${(p.models||[]).join(', ')||p.default_model}</div>
-                    <div class="model-status">${healthy}</div>
-                    ${errorInfo}
-                </div>
-                <div class="model-actions">
-                    <button class="btn btn-sm" data-name="${p.name}" onclick="testModel(this)">测试连接</button>
-                    <button class="btn btn-sm" data-name="${p.name}" onclick="editModel(this)">编辑</button>
-                    <button class="btn btn-sm" data-name="${p.name}" onclick="enableModel(this)">启用</button>
-                    <button class="btn btn-sm" data-name="${p.name}" onclick="deleteModel(this)">删除</button>
-                </div>
-            </div>`;
-        }).join('');
-    } catch(e) {}
-}
-
-async function testModel(btn){
-    var name = btn.getAttribute('data-name');
-    btn.disabled=true; btn.textContent='测试中...';
-    try {
-        const r = await fetch('/api/v1/models/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:name})});
-        const d = await r.json();
-        alert(name + ': ' + (d.healthy ? '连接成功' : '连接失败 - '+(d.error||'未知错误')));
-    } catch(e) { alert('测试失败: '+e); }
-    btn.disabled=false; btn.textContent='测试连接';
-    loadModels();
-}
-
-function editModel(btn){
-    var name = btn.getAttribute('data-name');
-    var provider = providers.find(p => p.name === name);
-    if(!provider) return;
-
-    document.getElementById('edit-original-name').value = name;
-    document.getElementById('edit-name').value = name;
-    document.getElementById('edit-url').value = provider.base_url || '';
-    document.getElementById('edit-key').value = '';
-    document.getElementById('edit-model').value = provider.default_model || '';
-    document.getElementById('edit-modal').style.display = 'block';
-}
-
-function closeEditModal(){
-    document.getElementById('edit-modal').style.display = 'none';
-}
-
-async function saveEdit(){
-    const name = document.getElementById('edit-original-name').value;
-    const url = document.getElementById('edit-url').value.trim();
-    const key = document.getElementById('edit-key').value.trim();
-    const model = document.getElementById('edit-model').value.trim();
-
-    if(!model){ alert('默认模型为必填'); return; }
-
-    try {
-        const body = {base_url: url, default_model: model};
-        if(key) body.api_key = key;  // 只有填写了才更新
-
-        const r = await fetch('/api/v1/models/providers/' + name, {
-            method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(body)
-        });
-        const d = await r.json();
-        if(d.status === 'ok'){
-            toast('已更新', 'success');
-            closeEditModal();
-            loadModels();
-        } else {
-            toast('更新失败: ' + (d.detail||''), 'error');
-        }
-    } catch(e) { toast('更新失败: '+e, 'error'); }
-}
-
-async function enableModel(btn){
-    var name = btn.getAttribute('data-name');
-    var provider = providers.find(p => p.name === name);
-    var defaultModel = provider ? provider.default_model : '';
-    if(!confirm('将 premium/standard/budget 全部切换到 ' + name + '？')) return;
-    try {
-        await fetch('/api/v1/models/switch/all',{method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({tier:'premium',provider:name,model:defaultModel})});
-        toast('已切换', 'success'); loadModels();
-    } catch(e) { toast('切换失败', 'error'); }
-}
-
-async function deleteModel(btn){
-    var name = btn.getAttribute('data-name');
-    if(!confirm('确定删除 ' + name + '？')) return;
-    btn.disabled = true;
-    try {
-        await fetch('/api/v1/models/providers/' + name, {method:'DELETE'});
-        toast('已删除', 'success'); loadModels();
-    } catch(e) { toast('删除失败', 'error'); btn.disabled = false; }
-}
-
-async function addModel(){
-    const name=document.getElementById('new-name').value.trim();
-    const url=document.getElementById('new-url').value.trim();
-    const key=document.getElementById('new-key').value.trim();
-    const model=document.getElementById('new-model').value.trim();
-    if(!name||!key||!model){ alert('名称、API Key 和默认模型为必填'); return; }
-    const msg=document.getElementById('add-msg'); msg.textContent='添加中...';
-    try {
-        const r=await fetch('/api/v1/models/providers',{method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({name,type:'openai_compatible',base_url:url,api_key:key,default_model:model})});
-        const d=await r.json();
-        msg.textContent=d.status==='ok'?'添加成功':'失败: '+(d.detail||'');
-        if(d.status==='ok'){ document.getElementById('new-name').value=''; document.getElementById('new-key').value=''; }
-        loadModels();
-    } catch(e){ msg.textContent='失败: '+e; }
-}
-
-loadModels();
-</script>
+<script src="/static/models.js"></script>
 {% endblock %}

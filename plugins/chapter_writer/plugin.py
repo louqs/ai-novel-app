@@ -833,7 +833,7 @@ class ChapterWriterPlugin:
                 {"role": "user", "content": user_prompt},
             ],
             tier=tier,
-            max_tokens=8192,
+            max_tokens=16384,
             temperature=0.85 if not revision_instructions else 0.7,
         )
 
@@ -972,7 +972,7 @@ class ChapterWriterPlugin:
         prompt = f"""分析以下章节，提取出现的人物和他们之间的关系。
 
 章节内容:
-{chapter_content[:4000]}
+{chapter_content[:8000]}
 
 返回 JSON:
 ```json
@@ -1184,11 +1184,27 @@ class ChapterWriterPlugin:
         settings_data = context.get("settings", {})
         if not genre_tags and isinstance(settings_data, dict):
             genre_tags = settings_data.get("genre_tags", [])
+            # 兼容 meta 嵌套结构
+            if not genre_tags:
+                meta = settings_data.get("meta", {})
+                if isinstance(meta, dict):
+                    genre_tags = meta.get("genre_tags", [])
         if genre_tags:
             parts.append("## 🔴 题材硬约束（严禁偏离）")
             parts.append(f"本小说类型: {', '.join(genre_tags)}")
             parts.append("只允许写这些类型范畴内的设定和情节。禁止引入标签之外的任何元素。")
             parts.append("例如：标签中没有'末世'就绝对不能出现丧尸；没有'科幻'就绝对不能出现飞船或高科技。")
+
+        # 风格圣经（用户定义的项目级风格约束）
+        if isinstance(settings_data, dict):
+            style_bible = settings_data.get("style_bible", "")
+            if not style_bible:
+                meta = settings_data.get("meta", {})
+                if isinstance(meta, dict):
+                    style_bible = meta.get("style_bible", "")
+            if style_bible:
+                parts.append("\n## 🔴 风格圣经（必须严格遵守）")
+                parts.append(style_bible)
 
         # 写前检查警告（番茄/起点通用）
         if pre_check_warnings:
@@ -1306,6 +1322,45 @@ class ChapterWriterPlugin:
                 habits = "/".join(tics[:2]) if tics else "无"
                 parts.append(f"- {name}: 口头禅{phrases} | 粗口:{swearing} | 句式:{pattern} | 习惯{habits}")
 
+        # 一致性账本（跨章事实追踪，防止设定崩坏）
+        ledger = context.get("consistency_ledger", {})
+        if ledger:
+            parts.append("\n## 🔴 一致性账本（严禁违反以下已确立事实）")
+            # 人物状态
+            char_states = ledger.get("character_states", {})
+            if char_states:
+                parts.append("### 当前人物状态")
+                for name, st in char_states.items():
+                    if isinstance(st, dict):
+                        rels = st.get("relationships", {})
+                        rel_text = ", ".join(f"{k}:{v}" for k, v in list(rels.items())[:3]) if rels else ""
+                        parts.append(
+                            f"- {name}: 状态:{st.get('status','未知')} | "
+                            f"位置:{st.get('location','未知')} | "
+                            f"最后出现:Ch{st.get('last_seen_ch','?')}"
+                            + (f" | 关系:{rel_text}" if rel_text else "")
+                        )
+            # 时间线（最近 5 条）
+            timeline = ledger.get("timeline", [])
+            if timeline:
+                parts.append("### 近期时间线")
+                for t in timeline[-5:]:
+                    if isinstance(t, dict):
+                        parts.append(f"- Ch{t.get('ch','?')}: {t.get('event','')} ({t.get('time','')})")
+            # 物品状态
+            ws = ledger.get("world_state", {})
+            items = ws.get("物品状态", {}) if isinstance(ws, dict) else {}
+            if items:
+                parts.append("### 物品归属")
+                for item, state in list(items.items())[:10]:
+                    parts.append(f"- {item}: {state}")
+            # 已知问题（避免重犯）
+            issues = [i for i in ledger.get("known_issues", []) if isinstance(i, dict) and not i.get("resolved")]
+            if issues:
+                parts.append("### ⚠ 已知一致性问题（本章必须避免类似错误）")
+                for iss in issues[-5:]:
+                    parts.append(f"- Ch{iss.get('ch','?')}: {iss.get('issue','')}")
+
         # RAG 上下文
         rag_results = context.get("rag_results", [])
         if rag_results:
@@ -1328,12 +1383,31 @@ class ChapterWriterPlugin:
                 parts.append(f"\n## 上一版内容（在此基础修改）\n{previous_content}")
 
         # 输出指令
+        # 从项目配置读取目标字数（用户创建项目时指定），降级到平台默认值
+        PLATFORM_WORD_DEFAULTS = {
+            "fanqie": 3000, "qidian": 4000, "jinjiang": 3000,
+            "qimao": 3000, "douban": 3000,
+        }
+        target_words = PLATFORM_WORD_DEFAULTS.get(platform, 3000)
+        if isinstance(settings_data, dict):
+            meta = settings_data.get("meta", {})
+            if isinstance(meta, dict):
+                tw = meta.get("target_words_per_chapter")
+                if tw and tw > 0:
+                    target_words = tw
+            tw2 = settings_data.get("target_words_per_chapter")
+            if tw2 and tw2 > 0:
+                target_words = tw2
+        # 根据目标字数计算允许范围（±30%，最低1500）
+        words_min = max(1500, int(target_words * 0.7))
+        words_max = int(target_words * 1.3)
+
         parts.append("\n## 输出格式要求")
         parts.append("请用 Markdown 格式输出：")
         parts.append("- 对话用引号包裹，重要的内心独白可用 *斜体*")
         parts.append("- 场景切换用 --- 分隔线")
         parts.append("- 不要输出章节标题（系统会自动添加 frontmatter）")
-        parts.append("- 目标字数: 2000-4000字")
+        parts.append(f"- 🔴 目标字数: {target_words}字（允许范围: {words_min}-{words_max}字，严禁低于{words_min}字）")
         if platform == "fanqie":
             parts.append("- 段落要短（≤5行），对话单独成行")
         parts.append("- 章尾必须有钩子")

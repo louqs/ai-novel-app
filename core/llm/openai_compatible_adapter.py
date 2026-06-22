@@ -188,7 +188,10 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                         import json
                         try:
                             chunk = json.loads(line[6:])
-                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            choices = chunk.get("choices", [])
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta", {})
                             token = delta.get("content", "")
                             if token:
                                 yield token
@@ -196,15 +199,10 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                             continue
 
     async def _health_check(self) -> None:
-        """发送最小请求验证连通性."""
-        response = await self._client.post(
-            "/v1/chat/completions",
-            json={
-                "model": self._default_model,
-                "messages": [{"role": "user", "content": "ping"}],
-                "max_tokens": 1,
-            },
-            timeout=httpx.Timeout(15),
+        """快速验证连通性 — 使用 /v1/models 端点（比发送聊天请求快得多）."""
+        response = await self._client.get(
+            "/v1/models",
+            timeout=httpx.Timeout(5),
         )
         response.raise_for_status()
 
@@ -233,6 +231,17 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
         reraise=True,
     )
     async def _call_with_retry(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
-        response = await self._client.request(method, url, **kwargs)
-        response.raise_for_status()
-        return response
+        last_exc: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                response = await self._client.request(method, url, **kwargs)
+                response.raise_for_status()
+                return response
+            except RETRYABLE as e:
+                last_exc = e
+                if attempt < self._max_retries - 1:
+                    wait = 2 ** attempt
+                    logger.warning("请求重试", provider=self.name, attempt=attempt + 1, wait=wait, error=str(e))
+                    import asyncio
+                    await asyncio.sleep(wait)
+        raise last_exc  # type: ignore[misc]

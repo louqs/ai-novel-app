@@ -133,7 +133,7 @@ class ForeshadowManagerPlugin(IQualityGate):
         prompt = f"""分析以下章节中的伏笔活动:
 
 章节内容:
-{chapter_content[:4000]}
+{chapter_content[:8000]}
 
 已有伏笔:
 {json.dumps(existing, ensure_ascii=False, indent=2) if existing else "无"}

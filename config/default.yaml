@@ -39,21 +39,21 @@ llm:
     premium:
       provider: qwen
       model: qwen-max
-      max_tokens: 8192
+      max_tokens: 16384
       temperature: 0.8
-      description: "正文撰写、文本润色"
+      description: "高级模型 — 写正文、润色文本（要求最高质量）"
     standard:
       provider: qwen
-      model: qwen-max
-      max_tokens: 4096
+      model: qwen-plus
+      max_tokens: 8192
       temperature: 0.7
-      description: "大纲规划、审查、风格"
+      description: "标准模型 — 规划大纲、审查质量（性价比高）"
     budget:
       provider: qwen
-      model: qwen-max
-      max_tokens: 2048
+      model: qwen-turbo
+      max_tokens: 4096
       temperature: 0.3
-      description: "元数据提取、RAG索引"
+      description: "经济模型 — 提取关键词、建立知识索引（最便宜）"
 
   # 重试设置
   request_timeout: 120
@@ -172,15 +172,24 @@ anti_ai:
   pattern_detection:
     high_freq_ai_words_threshold: 3
     weak_adverb_threshold: 3
-    uniform_sentence_sd_threshold: 4.0
+    uniform_sentence_sd_threshold: 2.5
     perplexity_min: 50
 
 chapter:
   default_words_min: 2000
   default_words_max: 4000
+  max_tokens: 16384              # 中文约1.5-2 token/字，16k ≈ 8000-10000字，防止长章节截断
   max_revision_rounds: 3
   max_consecutive_revise: 2
   mobile_optimization: true
+
+  # 平台推荐字数范围（用户未指定时使用）
+  platform_word_ranges:
+    fanqie:  { min: 2000, max: 5000, default: 3000 }
+    qidian:  { min: 3000, max: 6000, default: 4000 }
+    jinjiang: { min: 2000, max: 4000, default: 3000 }
+    qimao:   { min: 2000, max: 5000, default: 3000 }
+    douban:  { min: 2000, max: 5000, default: 3000 }
 
   # ---------------------------------------------------------------------------
   # 番茄爆款专家模式 (融合 500章+350章 实战经验)

@@ -82,6 +82,28 @@ async def generate_outline(project_id: str):
         raise HTTPException(status_code=500, detail=f"大纲生成失败: {str(e)[:200]}")
 
 
+@router.post("/api/v1/projects/{project_id}/outline/apply", response_model=dict)
+async def apply_outline(project_id: str, data: dict):
+    """应用用户选择的大纲版本."""
+    kernel = await get_kernel()
+    ns = f"project:{project_id}"
+    progress = data.get("data")
+    if not progress or not isinstance(progress, dict):
+        raise HTTPException(status_code=400, detail="缺少大纲数据")
+    if "volumes" not in progress:
+        raise HTTPException(status_code=400, detail="大纲数据格式错误，缺少 volumes")
+
+    await kernel.context().set(ns, "progress", progress)
+    await kernel.write_project_file(project_id, "progress.json", json.dumps(progress, indent=2, ensure_ascii=False))
+    if kernel.db:
+        settings = await kernel.db.get_settings(project_id)
+        settings["progress"] = progress
+        await kernel.db.save_settings(project_id, settings)
+
+    total_chs = sum(len(v.get("chapters", [])) for v in progress.get("volumes", []))
+    return {"status": "applied", "volumes": len(progress.get("volumes", [])), "chapters": total_chs}
+
+
 # =============================================================================
 # 章节
 # =============================================================================

@@ -7,73 +7,7 @@
     <div id="stats-result" class="muted" style="margin-top:10px">选择项目后加载</div>
 </div>
 {% endblock %}
+
 {% block scripts %}
-<script>
-(async function init(){
-    try {
-        const resp = await fetch('/api/v1/projects');
-        const projects = await resp.json();
-        const sel = document.getElementById('project-select');
-        projects.forEach(p => { sel.innerHTML += `<option value="${p.project_id}">${p.title}</option>`; });
-        const params = new URLSearchParams(window.location.search);
-        if(params.get('project_id')){ sel.value=params.get('project_id'); loadStats(params.get('project_id')); }
-    } catch(e) {}
-})();
-
-async function loadStats(pid){
-    if(!pid) return;
-    const div = document.getElementById('stats-result');
-    div.innerHTML = '<p class="muted">加载中...</p>';
-    try {
-        const resp = await fetch('/api/v1/projects/'+pid+'/stats');
-        const d = await resp.json();
-        const ov = d.overview||{};
-        let html = `<div class="status-grid">
-            <div class="status-item"><span class="label">总章节</span><span class="value">${ov.total_chapters||0}</span></div>
-            <div class="status-item"><span class="label">总字数</span><span class="value">${(ov.total_words||0).toLocaleString()}</span></div>
-            <div class="status-item"><span class="label">均字/章</span><span class="value">${ov.avg_words_per_chapter||0}</span></div>
-        </div>`;
-
-        // 字数趋势
-        const trend = d.word_count_trend||[];
-        if(trend.length){
-            const maxW = Math.max(...trend.map(t=>t.words));
-            html += '<h3>字数趋势</h3><div class="trend-chart">';
-            for(const t of trend.slice(-30)){
-                const pct = Math.round(t.words/maxW*100);
-                html += `<div class="trend-bar" style="height:${Math.max(pct,2)}px" title="Ch${t.chapter}: ${t.words}字"></div>`;
-            }
-            html += '</div>';
-        }
-
-        // 人物
-        const chars = (d.characters||{}).top_characters||[];
-        if(chars.length){
-            html += '<h3>人物出场</h3><div class="status-grid">';
-            for(const c of chars.slice(0,8)){
-                html += `<div class="status-item"><span class="label">${c.name}</span><span class="value">${c.appearances}</span></div>`;
-            }
-            html += '</div>';
-        }
-
-        // 可读性
-        const rd = d.readability||{};
-        html += `<h3>可读性</h3><p>均句长: ${rd.avg_sentence_length||0}字 | SD: ${rd.sentence_variation_sd||0} | 均段长: ${rd.avg_paragraph_length||0}字 | ${rd.suggestion||''}</p>`;
-
-        // 发布检查
-        const pub = d.platform_check||{};
-        html += `<h3>发布检查</h3>`;
-        for(const item of (pub.checklist||[])){
-            html += `<div>${item.status.indexOf('达标')>=0?'✅':'⬜'} ${item.item}: ${item.status}</div>`;
-        }
-        html += `<p>${pub.fanqie_10w_check||''}</p>`;
-
-        div.innerHTML = html;
-    } catch(e) { div.innerHTML='<p class="error">加载失败</p>'; }
-}
-</script>
-<style>
-.trend-chart { display:flex; align-items:flex-end; gap:2px; height:80px; margin:8px 0; }
-.trend-bar { flex:1; background:var(--accent); min-width:6px; border-radius:2px 2px 0 0; }
-</style>
+<script src="/static/stats.js"></script>
 {% endblock %}

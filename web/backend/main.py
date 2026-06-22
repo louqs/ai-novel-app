@@ -71,6 +71,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(LoggingMiddleware)
 
 # 路由
 app.include_router(projects.router)
@@ -159,6 +160,11 @@ async def coach_page(request: Request):
 @app.get("/stats", response_class=HTMLResponse)
 async def stats_page(request: Request):
     return HTMLResponse(_render_template("stats.html", request))
+
+
+@app.get("/reader", response_class=HTMLResponse)
+async def reader_page(request: Request):
+    return HTMLResponse(_render_template("reader.html", request))
 
 @app.get("/skills", response_class=HTMLResponse)
 async def skills_page(request: Request):

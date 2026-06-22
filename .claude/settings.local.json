@@ -29,7 +29,11 @@
       "Bash(python -c ' *)",
       "Bash(taskkill //F //IM python.exe)",
       "Bash(python -m web.backend.main)",
-      "Bash(claude *)"
+      "Bash(claude *)",
+      "Bash(python -m pytest tests/ -x -q --timeout=10)",
+      "Bash(python -m pytest tests/ -x -q)",
+      "Bash(python -m pytest tests/ -v --timeout=30)",
+      "Bash(python -m pytest tests/ -v)"
     ]
   }
 }

@@ -25,15 +25,14 @@ async def export_graph(project_id: str = ""):
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
-    # 回退到图谱管理器
+    # 指定了项目但该项目没有 graph.json，返回空图谱（避免显示其他项目的数据）
+    if project_id:
+        return {"nodes": [], "edges": [], "project_id": project_id}
+
+    # 未指定项目时回退到图谱管理器
     try:
         gm = await kernel.get_plugin("graph-manager")
         data = await gm.instance.export_graph()
-        # 如果图是空的，尝试从项目设定自动构建
-        if (not data.get("nodes") or len(data["nodes"]) == 0) and project_id:
-            await gm.instance.build_from_settings(project_id)
-            data = await gm.instance.export_graph()
-        data["project_id"] = project_id
         return data
     except Exception:
         return {"nodes": [], "edges": [], "note": "图谱插件未加载，请先在项目设置中构建人物"}

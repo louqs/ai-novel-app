@@ -209,82 +209,157 @@ class ImageGenerator:
         return path
 
     # ------------------------------------------------------------------
-    # Mock (无 API Key 时)
+    # Mock (无 API Key 时) — 精美 SVG 封面
     # ------------------------------------------------------------------
 
     def _mock_generate(self, prompt: str, size: str, filename: str) -> dict[str, Any]:
-        """生成包含书名和作者的 SVG 封面。"""
-        import re
+        """生成高质量 SVG 封面 — 渐变+粒子+光效+装饰元素。"""
+        import re, random, math
         title_match = re.search(r"titled '([^']+)'", prompt)
         title = title_match.group(1) if title_match else "未命名"
         author_match = re.search(r"by '([^']+)'", prompt)
         author = author_match.group(1) if author_match else "AI-Assisted"
 
-        # 根据类型选配色方案
-        genre_colors = {
-            "玄幻": ("#1a0a2e", "#4a1942", "#ffd700"),   # 深紫+金
-            "修仙": ("#0a1628", "#1a3a5c", "#00d4ff"),   # 深蓝+青
-            "都市": ("#1a1a2e", "#16213e", "#e94560"),   # 暗蓝+红
-            "甜宠": ("#2d1b69", "#f72585", "#ffd6e0"),   # 紫+粉
-            "悬疑": ("#0d0d0d", "#1a1a1a", "#c0392b"),   # 黑+暗红
-            "系统": ("#0f0f23", "#1e3a5f", "#00ff88"),   # 深色+绿
-        }
+        # 从 prompt 提取一句话梗概
+        one_liner = ""
+        concept_match = re.search(r"Concept: ([^,]+)", prompt)
+        if concept_match:
+            one_liner = concept_match.group(1).strip()[:40]
 
-        # 从 prompt 中提取类型
+        # 类型配色方案（bg1, bg2, accent, particle, glow）
+        THEMES = {
+            "玄幻": {"bg1":"#0a0118","bg2":"#1a0a3e","accent":"#ffd700","particle":"#ff9f43","glow":"#ffd700","deco":"sword"},
+            "修仙": {"bg1":"#020c1b","bg2":"#0a1929","accent":"#00d4ff","particle":"#64ffda","glow":"#00d4ff","deco":"cloud"},
+            "都市": {"bg1":"#0a0a1a","bg2":"#1a1a3e","accent":"#e94560","particle":"#ff6b6b","glow":"#e94560","deco":"building"},
+            "甜宠": {"bg1":"#1a0a2e","bg2":"#2d1b69","accent":"#f72585","particle":"#ffd6e0","glow":"#f72585","deco":"heart"},
+            "悬疑": {"bg1":"#050505","bg2":"#0d0d0d","accent":"#c0392b","particle":"#e74c3c","glow":"#c0392b","deco":"eye"},
+            "系统": {"bg1":"#020208","bg2":"#0a0a2e","accent":"#00ff88","particle":"#00ff88","glow":"#00ff88","deco":"circuit"},
+        }
         genre = "玄幻"
-        for g in genre_colors:
+        for g in THEMES:
             if g in prompt:
                 genre = g
                 break
-        bg1, bg2, accent = genre_colors.get(genre, genre_colors["玄幻"])
+        t = THEMES.get(genre, THEMES["玄幻"])
 
-        # 处理长标题——超过8字换行
+        # 标题排版
         title_lines = [title]
-        if len(title) > 8:
+        if len(title) > 6:
             mid = len(title) // 2
-            # 找到中间附近的标点或空格
-            for j in range(mid - 2, mid + 3):
-                if j < len(title) and title[j] in "之·的·在":
-                    mid = j + 1
-                    break
+            for j in range(max(0, mid-2), min(len(title), mid+3)):
+                if title[j] in "之·的·在与":
+                    mid = j + 1; break
             title_lines = [title[:mid], title[mid:]]
+        fs = 52 if len(title_lines) == 1 else 44
+        y_title = 360
 
-        title_ts = ""
-        y_start = 340
+        # 生成随机粒子
+        random.seed(hash(title))
+        particles = ""
+        for _ in range(30):
+            px, py = random.randint(30, 570), random.randint(30, 870)
+            pr = random.uniform(0.5, 2.5)
+            po = random.uniform(0.1, 0.5)
+            particles += f'<circle cx="{px}" cy="{py}" r="{pr}" fill="{t["particle"]}" opacity="{po}"/>\n'
+
+        # 生成装饰光斑
+        glows = ""
+        for _ in range(5):
+            gx, gy = random.randint(100, 500), random.randint(150, 700)
+            gr = random.randint(40, 100)
+            go = random.uniform(0.03, 0.08)
+            glows += f'<circle cx="{gx}" cy="{gy}" r="{gr}" fill="{t["glow"]}" opacity="{go}"/>\n'
+
+        # 装饰几何线条
+        geo_lines = ""
+        for i in range(6):
+            x1, y1 = random.randint(0, 600), random.randint(0, 900)
+            x2, y2 = x1 + random.randint(-150, 150), y1 + random.randint(-150, 150)
+            geo_lines += f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{t["accent"]}" stroke-width="0.3" opacity="0.1"/>\n'
+
+        # 标题文字
+        title_svg = ""
         for i, tl in enumerate(title_lines):
-            title_ts += f'<text x="300" y="{y_start + i * 55}" text-anchor="middle" fill="{accent}" font-family="SimSun, serif" font-size="{48 if len(title_lines)==1 else 42}" font-weight="bold" letter-spacing="4">{tl}</text>\n'
+            y = y_title + i * (fs + 12)
+            title_svg += f'''<text x="300" y="{y}" text-anchor="middle" fill="{t["accent"]}" font-family="SimSun,'Noto Serif SC',serif" font-size="{fs}" font-weight="bold" letter-spacing="6" filter="url(#titleGlow)">{tl}</text>\n'''
+
+        # 副标题/梗概
+        subtitle_svg = ""
+        if one_liner:
+            subtitle_svg = f'<text x="300" y="{y_title + len(title_lines)*(fs+12) + 20}" text-anchor="middle" fill="rgba(255,255,255,0.5)" font-family="sans-serif" font-size="13" letter-spacing="2">{one_liner}</text>'
+
+        # 装饰符号（根据类型）
+        deco_svg = {
+            "sword": f'<line x1="260" y1="{y_title-30}" x2="340" y2="{y_title-30}" stroke="{t["accent"]}" stroke-width="2" opacity="0.6"/><circle cx="300" cy="{y_title-30}" r="3" fill="{t["accent"]}" opacity="0.8"/>',
+            "cloud": f'<path d="M250,{y_title-25} Q300,{y_title-45} 350,{y_title-25}" stroke="{t["accent"]}" stroke-width="1.5" fill="none" opacity="0.5"/>',
+            "building": f'<rect x="280" y="{y_title-40}" width="8" height="20" fill="{t["accent"]}" opacity="0.3"/><rect x="295" y="{y_title-50}" width="10" height="30" fill="{t["accent"]}" opacity="0.3"/><rect x="312" y="{y_title-35}" width="8" height="15" fill="{t["accent"]}" opacity="0.3"/>',
+            "heart": f'<path d="M300,{y_title-15} C290,{y_title-35} 270,{y_title-35} 270,{y_title-20} C270,{y_title-5} 300,{y_title+5} 300,{y_title+5} C300,{y_title+5} 330,{y_title-5} 330,{y_title-20} C330,{y_title-35} 310,{y_title-35} 300,{y_title-15}Z" fill="none" stroke="{t["accent"]}" stroke-width="1.5" opacity="0.4"/>',
+            "eye": f'<ellipse cx="300" cy="{y_title-25}" rx="25" ry="12" fill="none" stroke="{t["accent"]}" stroke-width="1.5" opacity="0.4"/><circle cx="300" cy="{y_title-25}" r="5" fill="{t["accent"]}" opacity="0.3"/>',
+            "circuit": f'<circle cx="300" cy="{y_title-25}" r="8" fill="none" stroke="{t["accent"]}" stroke-width="1" opacity="0.4"/><line x1="292" y1="{y_title-25}" x2="270" y2="{y_title-25}" stroke="{t["accent"]}" stroke-width="0.8" opacity="0.3"/><line x1="308" y1="{y_title-25}" x2="330" y2="{y_title-25}" stroke="{t["accent"]}" stroke-width="0.8" opacity="0.3"/>',
+        }.get(genre, "")
 
         svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="600" height="900" viewBox="0 0 600 900">
   <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:{bg1}"/>
-      <stop offset="50%" style="stop-color:{bg2}"/>
-      <stop offset="100%" style="stop-color:{bg1}"/>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="30%" y2="100%">
+      <stop offset="0%" style="stop-color:{t['bg1']}"/>
+      <stop offset="50%" style="stop-color:{t['bg2']}"/>
+      <stop offset="100%" style="stop-color:{t['bg1']}"/>
     </linearGradient>
-    <filter id="glow">
-      <feGaussianBlur stdDeviation="3" result="blur"/>
+    <radialGradient id="spotlight" cx="50%" cy="40%" r="50%">
+      <stop offset="0%" style="stop-color:{t['accent']};stop-opacity:0.08"/>
+      <stop offset="100%" style="stop-color:{t['accent']};stop-opacity:0"/>
+    </radialGradient>
+    <filter id="titleGlow">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
       <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
+    <filter id="softGlow">
+      <feGaussianBlur stdDeviation="8"/>
+    </filter>
   </defs>
+
   <!-- 背景 -->
   <rect width="600" height="900" fill="url(#bg)"/>
-  <!-- 装饰边框 -->
-  <rect x="40" y="40" width="520" height="820" rx="8" fill="none" stroke="{accent}" stroke-width="1" opacity="0.3"/>
-  <rect x="50" y="50" width="500" height="800" rx="6" fill="none" stroke="{accent}" stroke-width="1" opacity="0.15"/>
+  <rect width="600" height="900" fill="url(#spotlight)"/>
+
+  <!-- 装饰光斑 -->
+  {glows}
+
+  <!-- 几何线条 -->
+  {geo_lines}
+
+  <!-- 粒子 -->
+  {particles}
+
+  <!-- 边框 -->
+  <rect x="30" y="30" width="540" height="840" rx="4" fill="none" stroke="{t['accent']}" stroke-width="0.5" opacity="0.2"/>
+  <rect x="35" y="35" width="530" height="830" rx="3" fill="none" stroke="{t['accent']}" stroke-width="0.3" opacity="0.1"/>
+
   <!-- 顶部装饰线 -->
-  <line x1="100" y1="120" x2="500" y2="120" stroke="{accent}" stroke-width="1" opacity="0.4"/>
+  <line x1="120" y1="100" x2="480" y2="100" stroke="{t['accent']}" stroke-width="0.5" opacity="0.3"/>
+  <line x1="200" y1="105" x2="400" y2="105" stroke="{t['accent']}" stroke-width="0.3" opacity="0.2"/>
+
   <!-- 类型标签 -->
-  <text x="300" y="150" text-anchor="middle" fill="{accent}" font-family="sans-serif" font-size="14" letter-spacing="8" opacity="0.7">{genre} · 小说</text>
+  <text x="300" y="135" text-anchor="middle" fill="{t['accent']}" font-family="sans-serif" font-size="11" letter-spacing="10" opacity="0.6">{genre}</text>
+
+  <!-- 装饰符号 -->
+  {deco_svg}
+
   <!-- 书名 -->
-  <g filter="url(#glow)">
-{title_ts}  </g>
-  <!-- 装饰分隔线 -->
-  <line x1="180" y1="{y_start + len(title_lines) * 55 + 30}" x2="420" y2="{y_start + len(title_lines) * 55 + 30}" stroke="{accent}" stroke-width="1" opacity="0.5"/>
+  {title_svg}
+
+  <!-- 副标题 -->
+  {subtitle_svg}
+
+  <!-- 分隔线 -->
+  <line x1="200" y1="{y_title + len(title_lines)*(fs+12) + 50}" x2="400" y2="{y_title + len(title_lines)*(fs+12) + 50}" stroke="{t['accent']}" stroke-width="0.5" opacity="0.3"/>
+
   <!-- 作者 -->
-  <text x="300" y="{y_start + len(title_lines) * 55 + 80}" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-family="sans-serif" font-size="18" letter-spacing="3">{author} · 著</text>
+  <text x="300" y="{y_title + len(title_lines)*(fs+12) + 85}" text-anchor="middle" fill="rgba(255,255,255,0.6)" font-family="sans-serif" font-size="16" letter-spacing="4">{author}</text>
+
   <!-- 底部装饰 -->
-  <text x="300" y="820" text-anchor="middle" fill="rgba(255,255,255,0.2)" font-family="sans-serif" font-size="10" letter-spacing="4">AI NOVEL APP</text>
-  <line x1="80" y1="800" x2="520" y2="800" stroke="{accent}" stroke-width="1" opacity="0.2"/>
+  <line x1="100" y1="810" x2="500" y2="810" stroke="{t['accent']}" stroke-width="0.3" opacity="0.15"/>
+  <text x="300" y="835" text-anchor="middle" fill="rgba(255,255,255,0.12)" font-family="sans-serif" font-size="9" letter-spacing="6">AI NOVEL STUDIO</text>
 </svg>"""
 
         path = self._output_dir / f"{filename}.svg"

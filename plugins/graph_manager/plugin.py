@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from core.graph_builder import GraphBuilder
@@ -117,7 +118,21 @@ class GraphManagerPlugin:
         if not characters.get("characters"):
             return {"nodes_added": 0, "edges_added": 0, "message": "无人物数据，请先生成章节或世界观"}
 
-        return await self._builder.build_from_settings(project_id, settings, characters)
+        result = await self._builder.build_from_settings(project_id, settings, characters)
+
+        # 持久化图谱到项目目录，确保切换项目后能正确加载
+        try:
+            if self._query:
+                graph_data = await self._query.export_full_graph()
+                graph_data["project_id"] = project_id
+                await self._kernel.write_project_file(
+                    project_id, "graph.json",
+                    json.dumps(graph_data, ensure_ascii=False, indent=2),
+                )
+        except Exception as exc:
+            logger.warning("图谱持久化失败", error=str(exc))
+
+        return result
 
     async def _extract_characters_from_chapters(self, project_id: str) -> tuple[dict, list]:
         """从已有章节中通过 LLM 自动提取人物和关系。"""
@@ -137,11 +152,11 @@ class GraphManagerPlugin:
                     if self._kernel.db:
                         ch_data = await self._kernel.db.get_chapter(project_id, ch_num, vol_num)
                         if ch_data:
-                            all_content += ch_data.get("content", "")[:3000] + "\n\n"
+                            all_content += ch_data.get("content", "")[:6000] + "\n\n"
                     else:
                         chapter_id = f"ch_v{vol_num:02d}_{ch_num:04d}"
                         content = await self._kernel.read_project_file(project_id, f"chapters/{chapter_id}.md")
-                        all_content += content[:3000] + "\n\n"
+                        all_content += content[:6000] + "\n\n"
                     chapter_count += 1
                     if chapter_count > 10:
                         break

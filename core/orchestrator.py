@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -53,6 +54,7 @@ class PipelineContext:
     active_foreshadows: list[dict[str, Any]] = field(default_factory=list)
     relevant_facts: list[dict[str, Any]] = field(default_factory=list)
     style_profile: dict[str, Any] = field(default_factory=dict)
+    consistency_ledger: dict[str, Any] = field(default_factory=dict)
 
     # 产出
     draft_content: str = ""
@@ -139,9 +141,9 @@ class OrchestrationEngine:
             logger.exception("章节生成失败", chapter=chapter_number)
             raise
 
-    async def get_pipeline_status(self, project_id: str, chapter_number: int) -> PipelineContext | None:
+    async def get_pipeline_status(self, project_id: str, chapter_number: int, volume_number: int = 1) -> PipelineContext | None:
         """获取流水线状态."""
-        key = f"{project_id}:{chapter_number}"
+        key = f"{project_id}:v{volume_number}:ch{chapter_number}"
         return self._pipelines.get(key)
 
     # ------------------------------------------------------------------
@@ -179,15 +181,16 @@ class OrchestrationEngine:
         except Exception:
             pass
 
-        # 活跃伏笔
+        # 活跃伏笔（从文件读取，ContextManager 中无持久化数据）
         try:
-            foreshadows = await kernel.context().get(f"project:{ctx.project_id}", "foreshadows")
+            raw = await kernel.read_project_file(ctx.project_id, "foreshadows.json")
+            foreshadows = json.loads(raw)
             if foreshadows:
                 ctx.active_foreshadows = [
                     fs for fs in foreshadows.get("entries", {}).values()
                     if isinstance(fs, dict) and fs.get("status") in ("planted", "building")
                 ]
-        except Exception:
+        except (FileNotFoundError, json.JSONDecodeError):
             pass
 
         # 事实账本
@@ -198,6 +201,13 @@ class OrchestrationEngine:
         except Exception:
             pass
 
+        # 一致性账本
+        try:
+            raw = await kernel.read_project_file(ctx.project_id, "consistency_ledger.json")
+            ctx.consistency_ledger = json.loads(raw)
+        except (FileNotFoundError, json.JSONDecodeError):
+            ctx.consistency_ledger = {}
+
         logger.info("上下文已组装", chapter=ctx.chapter_number, foreshadows=len(ctx.active_foreshadows))
 
     async def _draft_chapter(self, ctx: PipelineContext) -> dict[str, Any]:
@@ -205,18 +215,25 @@ class OrchestrationEngine:
         kernel = self._kernel
         chapter_writer = await kernel.get_plugin("chapter-writer")
 
-        # 构建上下文 — 使用卷+章组合键获取上一章摘要
+        # 构建上下文 — 使用卷+章组合键获取近6章摘要
         prev_summary = ""
         if ctx.chapter_number > 1:
-            prev_summary = await kernel.context().get(
-                f"project:{ctx.project_id}", f"summary_vol{ctx.volume_number}_ch{ctx.chapter_number - 1}", ""
-            )
+            summaries = []
+            for n in range(max(1, ctx.chapter_number - 6), ctx.chapter_number):
+                s = await kernel.context().get(
+                    f"project:{ctx.project_id}", f"summary_vol{ctx.volume_number}_ch{n}", ""
+                )
+                if s:
+                    summaries.append(f"第{n}章: {s}")
+            if summaries:
+                prev_summary = "【近期章节摘要】\n" + "\n".join(summaries)
         writer_context = {
             "settings": await kernel.context().get_namespace(f"project:{ctx.project_id}"),
             "characters": await kernel.context().get(f"project:{ctx.project_id}", "characters", {}),
             "previous_chapters_summary": prev_summary,
             "rag_results": ctx.rag_results,
             "active_foreshadows": ctx.active_foreshadows,
+            "consistency_ledger": ctx.consistency_ledger,
         }
 
         chapter = await chapter_writer.instance.write_chapter(
@@ -321,4 +338,188 @@ class OrchestrationEngine:
             chapter.get("content", ""),
         )
 
+        # 更新一致性账本
+        await self._update_consistency_ledger(chapter, ctx)
+
         logger.info("记忆已更新", volume=vol, chapter=ch)
+
+    async def _update_consistency_ledger(self, chapter: dict, ctx: PipelineContext) -> None:
+        """更新一致性账本 — 提取事实、更新人物状态/时间线/世界状态."""
+        kernel = self._kernel
+        content = chapter.get("content", "")
+        vol = ctx.volume_number
+        ch = ctx.chapter_number
+
+        # 读取现有账本
+        ledger = ctx.consistency_ledger or {}
+        if not ledger:
+            ledger = {
+                "chapter_summaries": {},
+                "character_states": {},
+                "timeline": [],
+                "world_state": {"已揭示设定": [], "物品状态": {}, "悬念": []},
+                "known_issues": [],
+                "last_updated_ch": 0,
+                "last_updated_vol": 1,
+            }
+
+        # 1. 保存本章摘要（比 _update_memory 的 200 字更完整）
+        summary_text = content[:500] + "..." if len(content) > 500 else content
+        ch_key = str(ch)
+        ledger["chapter_summaries"][ch_key] = {
+            "summary": summary_text,
+            "volume": vol,
+            "word_count": len(content),
+        }
+
+        # 2. 调用 consistency_checker 提取硬事实
+        try:
+            checker = await kernel.get_plugin("consistency-checker")
+            facts = await checker.instance.extract_facts(content, ch)
+            if facts:
+                # 更新人物状态
+                for fact in facts:
+                    cat = fact.get("category", "")
+                    subj = fact.get("subject", "")
+                    if not subj:
+                        continue
+                    if cat == "character_state":
+                        if subj not in ledger["character_states"]:
+                            ledger["character_states"][subj] = {}
+                        ledger["character_states"][subj]["status"] = fact.get("value", "")
+                        ledger["character_states"][subj]["last_seen_ch"] = ch
+                    elif cat == "location_state":
+                        if subj not in ledger["character_states"]:
+                            ledger["character_states"][subj] = {}
+                        ledger["character_states"][subj]["location"] = fact.get("value", "")
+                        ledger["character_states"][subj]["last_seen_ch"] = ch
+                    elif cat == "relationship":
+                        if subj not in ledger["character_states"]:
+                            ledger["character_states"][subj] = {}
+                        if "relationships" not in ledger["character_states"][subj]:
+                            ledger["character_states"][subj]["relationships"] = {}
+                        obj = fact.get("predicate", "").replace("与", "").replace("关系变为", "")
+                        ledger["character_states"][subj]["relationships"][obj] = fact.get("value", "")
+                    elif cat == "timeline":
+                        ledger["timeline"].append({
+                            "ch": ch, "event": fact.get("predicate", ""),
+                            "time": fact.get("value", f"Ch{ch}"),
+                        })
+                    elif cat == "possession":
+                        ws = ledger["world_state"]
+                        if "物品状态" not in ws:
+                            ws["物品状态"] = {}
+                        ws["物品状态"][subj] = fact.get("value", "")
+
+                logger.info("一致性账本事实已提取", chapter=ch, facts=len(facts))
+        except Exception as exc:
+            logger.warning("事实提取失败（降级为仅保存摘要）", error=str(exc))
+
+        # 3. 更新进度指针
+        ledger["last_updated_ch"] = ch
+        ledger["last_updated_vol"] = vol
+
+        # 4. 写回文件
+        try:
+            await kernel.write_project_file(
+                ctx.project_id,
+                "consistency_ledger.json",
+                json.dumps(ledger, indent=2, ensure_ascii=False),
+            )
+            ctx.consistency_ledger = ledger
+            logger.info("一致性账本已更新", volume=vol, chapter=ch)
+        except Exception as exc:
+            logger.warning("一致性账本写入失败", error=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# 独立函数 — 供 stream.py 等非 orchestrator 路径调用
+# ---------------------------------------------------------------------------
+
+
+async def update_consistency_ledger_standalone(
+    kernel: Any,
+    project_id: str,
+    chapter_content: str,
+    chapter_number: int,
+    volume_number: int,
+) -> None:
+    """独立的一致性账本更新函数（不依赖 PipelineContext）."""
+    # 读取现有账本
+    ledger = {}
+    try:
+        raw = await kernel.read_project_file(project_id, "consistency_ledger.json")
+        ledger = json.loads(raw)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    if not ledger:
+        ledger = {
+            "chapter_summaries": {},
+            "character_states": {},
+            "timeline": [],
+            "world_state": {"已揭示设定": [], "物品状态": {}, "悬念": []},
+            "known_issues": [],
+            "last_updated_ch": 0,
+            "last_updated_vol": 1,
+        }
+
+    # 保存摘要
+    summary_text = chapter_content[:500] + "..." if len(chapter_content) > 500 else chapter_content
+    ch_key = str(chapter_number)
+    ledger["chapter_summaries"][ch_key] = {
+        "summary": summary_text,
+        "volume": volume_number,
+        "word_count": len(chapter_content),
+    }
+
+    # 提取事实
+    try:
+        checker = await kernel.get_plugin("consistency-checker")
+        facts = await checker.instance.extract_facts(chapter_content, chapter_number)
+        for fact in facts:
+            cat = fact.get("category", "")
+            subj = fact.get("subject", "")
+            if not subj:
+                continue
+            if cat == "character_state":
+                if subj not in ledger["character_states"]:
+                    ledger["character_states"][subj] = {}
+                ledger["character_states"][subj]["status"] = fact.get("value", "")
+                ledger["character_states"][subj]["last_seen_ch"] = chapter_number
+            elif cat == "location_state":
+                if subj not in ledger["character_states"]:
+                    ledger["character_states"][subj] = {}
+                ledger["character_states"][subj]["location"] = fact.get("value", "")
+                ledger["character_states"][subj]["last_seen_ch"] = chapter_number
+            elif cat == "relationship":
+                if subj not in ledger["character_states"]:
+                    ledger["character_states"][subj] = {}
+                if "relationships" not in ledger["character_states"][subj]:
+                    ledger["character_states"][subj]["relationships"] = {}
+                obj = fact.get("predicate", "").replace("与", "").replace("关系变为", "")
+                ledger["character_states"][subj]["relationships"][obj] = fact.get("value", "")
+            elif cat == "timeline":
+                ledger["timeline"].append({
+                    "ch": chapter_number, "event": fact.get("predicate", ""),
+                    "time": fact.get("value", f"Ch{chapter_number}"),
+                })
+            elif cat == "possession":
+                ws = ledger["world_state"]
+                if "物品状态" not in ws:
+                    ws["物品状态"] = {}
+                ws["物品状态"][subj] = fact.get("value", "")
+    except Exception as exc:
+        logger.warning("独立账本事实提取失败", error=str(exc))
+
+    ledger["last_updated_ch"] = chapter_number
+    ledger["last_updated_vol"] = volume_number
+
+    try:
+        await kernel.write_project_file(
+            project_id, "consistency_ledger.json",
+            json.dumps(ledger, indent=2, ensure_ascii=False),
+        )
+        logger.info("独立账本已更新", volume=volume_number, chapter=chapter_number)
+    except Exception as exc:
+        logger.warning("独立账本写入失败", error=str(exc))

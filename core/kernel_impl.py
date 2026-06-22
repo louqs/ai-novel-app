@@ -66,10 +66,21 @@ class Kernel(IKernelAPI):
         config = self._config_manager.get_all()
         registry = ModelRegistry(config, db=self.db)
 
+        # 获取已删除的配置 Provider 列表
+        deleted_config = set()
+        if self.db:
+            try:
+                deleted_config = await self.db.get_deleted_config_providers()
+            except Exception:
+                pass
+
         # 从 providers 配置加载
         providers_cfg = config.get("providers", [])
         for provider_cfg in providers_cfg:
             name = provider_cfg.get("name", "")
+            if name in deleted_config:
+                logger.info("跳过已删除的配置 Provider", name=name)
+                continue
             ptype = provider_cfg.get("type", "openai_compatible")
             api_key_env = provider_cfg.get("api_key_env", "")
             api_key = os.getenv(api_key_env, "")

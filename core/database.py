@@ -50,6 +50,9 @@ class DatabaseManager:
                 """CREATE TABLE IF NOT EXISTS model_settings (
                     tier TEXT PRIMARY KEY, provider TEXT, model TEXT, updated_at TEXT
                 )""",
+                """CREATE TABLE IF NOT EXISTS deleted_config_providers (
+                    name TEXT PRIMARY KEY, deleted_at TEXT
+                )""",
             ]:
                 await db.execute(sql)
 
@@ -138,6 +141,9 @@ class DatabaseManager:
     async def list_chapters(self, pid: str) -> list[dict]:
         return await self._fetch("SELECT * FROM chapters WHERE project_id=? ORDER BY volume_number, chapter_number", (pid,))
 
+    async def delete_chapter(self, pid: str, num: int, volume: int = 1) -> None:
+        await self._exec("DELETE FROM chapters WHERE project_id=? AND chapter_number=? AND volume_number=?", (pid, num, volume))
+
     # ---- Character / Settings ----
 
     async def save_characters(self, pid: str, data: dict) -> None:
@@ -175,6 +181,25 @@ class DatabaseManager:
                 except Exception:
                     r["models"] = []
         return rows
+
+    # ---- 已删除的配置 Provider 管理 ----
+
+    async def mark_config_provider_deleted(self, name: str) -> None:
+        """标记配置文件中的 Provider 为已删除。"""
+        from datetime import datetime, timezone
+        await self._exec(
+            "INSERT OR REPLACE INTO deleted_config_providers (name, deleted_at) VALUES (?, ?)",
+            (name, datetime.now(timezone.utc).isoformat()),
+        )
+
+    async def get_deleted_config_providers(self) -> set[str]:
+        """获取所有已删除的配置 Provider 名称。"""
+        rows = await self._fetch("SELECT name FROM deleted_config_providers")
+        return {r["name"] for r in rows}
+
+    async def restore_config_provider(self, name: str) -> None:
+        """恢复被删除的配置 Provider。"""
+        await self._exec("DELETE FROM deleted_config_providers WHERE name=?", (name,))
 
     # ---- Model Settings (Tier 配置持久化) ----
 

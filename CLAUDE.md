@@ -6,6 +6,61 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI 小说生成智能体系统 — 微内核 + 插件架构，支持多 Agent 协作、RAG 知识库、反AI检测和模型分层路由。
 
+## 写作技能库（整合自 Lorn.NovelWriteSkills）
+
+项目已整合专业写作技能库，包含50+个通用写作技能、8个题材特定技能和质检工具链。
+
+### 知识库结构
+
+```
+knowledge_base/
+├── writing_skills/           # 通用写作技能
+│   ├── 通用-创建小说正文/     # 章节正文创作完整流程
+│   ├── 通用-去AI味重写/       # AI文本检测与重写
+│   ├── 通用-章节创作闭环/     # 章节级执行编排
+│   ├── 通用-设计人物传记/     # 人物设计与传记
+│   ├── 通用-设计故事设定/     # 世界观与规则设定
+│   ├── 通用-设计总大纲/       # 大纲设计与规划
+│   ├── 通用-正文润色/         # 文本精修与优化
+│   ├── 通用-审阅章节正文/     # 章节质量审查
+│   ├── 长篇小说最佳实践.md   # 长篇写作指南
+│   └── 短篇小说集最佳实践.md # 短篇写作指南
+├── writing_research/         # 写作研究资料
+│   ├── 写作技法_*.md         # 各类写作技法研究
+│   ├── 小说写作中避免AI味的策略与技巧研究.md
+│   ├── 起点中文网爆款小说竞品拆解方法论.md
+│   └── 平台字数_16平台每章最佳字数研究.md
+├── genre_skills/             # 题材特定技能
+│   ├── AI科幻/               # AI科幻题材技能
+│   ├── 都市悬疑/             # 都市悬疑题材技能
+│   ├── 悬疑推理/             # 悬疑推理题材技能
+│   ├── 女频爱情/             # 女频爱情题材技能
+│   ├── 异能志怪/             # 异能志怪题材技能
+│   ├── 都市职场/             # 都市职场题材技能
+│   ├── 太空科幻/             # 太空科幻题材技能
+│   └── 赛博庞克/             # 赛博庞克题材技能
+└── anti_ai_patterns/         # 反AI检测模式库
+```
+
+### 质检工具链
+
+```
+scripts/writing_tools/
+├── count-chapter.ps1              # 章节字数统计
+├── count-afterword.ps1            # 作者有话说字数统计
+├── chapter_similarity_check.ps1   # 章节相似度检测
+├── check_internal_dup.ps1         # 内部重复检测
+└── format_novel_markdown.ps1      # Markdown格式化
+```
+
+### 核心能力覆盖
+
+- **构思与设计**: 题材定位、故事面、人物传记、故事设定、大纲设计
+- **写作执行**: 章节创作、场景单元、对话冲突、章末钩子
+- **修订与质控**: 正文润色、去AI味、审阅优化
+- **商业化与分发**: 多平台输出、标题设计、内容简介、签约评估
+- **研究与调研**: 深度研究、竞对分析、市场调研
+
 ## 开发命令
 
 ```bash
@@ -96,6 +151,85 @@ IDLE → CONTEXT_ASSEMBLY → DRAFTING → STYLE_ADAPT
     → { ACCEPTED | REVISION_NEEDED }
     → MEMORY_UPDATE → IDLE
 ```
+
+## 写作技能库使用指南
+
+### 快速开始
+
+1. **查看通用写作技能**
+   ```bash
+   # 浏览所有通用技能
+   ls knowledge_base/writing_skills/
+
+   # 查看特定技能详情
+   cat knowledge_base/writing_skills/通用-创建小说正文/SKILL.md
+   ```
+
+2. **查看题材特定技能**
+   ```bash
+   # 浏览所有题材技能
+   ls knowledge_base/genre_skills/
+
+   # 查看特定题材技能
+   ls knowledge_base/genre_skills/AI科幻/.github/prompts/
+   ```
+
+3. **使用质检工具**
+   ```bash
+   # 统计章节字数
+   pwsh scripts/writing_tools/count-chapter.ps1 -File "novel_output/chapter1.md"
+
+   # 检查章节相似度
+   pwsh scripts/writing_tools/chapter_similarity_check.ps1 -Dir "novel_output/"
+   ```
+
+### 核心写作流程
+
+#### 1. 项目初始化阶段
+- 参考 `knowledge_base/writing_research/小说项目初始化方法论体系*.md`
+- 使用 `通用-小说项目初始化` 技能进行战略策划
+
+#### 2. 构思与设计阶段
+- **题材定位**: `通用-设计题材定位框架`
+- **人物设计**: `通用-设计人物传记` (含人物传记模板)
+- **故事设定**: `通用-设计故事设定` (含世界观规则)
+- **大纲设计**: `通用-设计总大纲` + `通用-设计分卷大纲`
+
+#### 3. 章节写作阶段
+- **正文创作**: `通用-创建小说正文` (含四拍执行与钩子轮换)
+- **章节闭环**: `通用-章节创作闭环` (含日志续跑与终审门槛)
+- **场景执行**: `通用-执行场景单元` (含场景施工卡)
+
+#### 4. 修订与质控阶段
+- **正文润色**: `通用-正文润色`
+- **去AI味**: `通用-去AI味重写` (含十大结构指纹诊断)
+- **章节审阅**: `通用-审阅章节正文` (含问题分级)
+
+### 写作研究资料
+
+关键研究资料位于 `knowledge_base/writing_research/`:
+
+- `写作技法_黄金三章与黄金一章含金量提升研究.md` - 开篇写作技巧
+- `小说写作中避免AI味的策略与技巧研究.md` - 反AI检测策略
+- `起点中文网爆款小说竞品拆解方法论*.md` - 竞品分析方法
+- `平台字数_16平台每章最佳字数研究.md` - 平台字数规范
+
+### 题材特定技能
+
+每个题材目录包含:
+- `.github/prompts/` - 任务入口与SOP
+- `.github/skills/` - 题材包装层技能
+- `.github/instructions/` - 题材局部规则
+- `.github/agents/` - 题材特定Agent配置
+
+### 质检工具使用
+
+所有质检脚本位于 `scripts/writing_tools/`:
+
+- **字数统计**: `count-chapter.ps1` (正文) / `count-afterword.ps1` (作者有话说)
+- **相似度检测**: `chapter_similarity_check.ps1` (检测章节间相似度)
+- **重复检测**: `check_internal_dup.ps1` (检测内部重复)
+- **格式化**: `format_novel_markdown.ps1` (Markdown格式标准化)
 
 ## 配置
 

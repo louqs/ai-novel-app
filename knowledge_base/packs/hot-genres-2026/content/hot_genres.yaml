@@ -1,73 +1,70 @@
 genres:
-  - name: 无限流
+  - name: 赛博修仙
     platform: qidian
-    audience: 青少年至中年男性
+    audience: 18-35岁男性为主，泛二次元及科幻爱好者
     heat: ★★★★★
-    description: 结合了游戏、科幻等元素，主角在不同世界或维度间穿梭冒险的故事。
-    keywords: [异界, 冒险, 游戏]
+    description: 将传统修仙体系与赛博朋克、AI、虚拟现实等元素融合，强调科技与灵力的冲突与共生。2026年成为起点头部增长最快子类，多部作品进入畅销榜Top50。
+    keywords: [赛博朋克, 修仙, AI觉醒, 虚拟世界, 灵能科技]
+    competition: 高
+    new_author_friendly: false
+    updated: "2026-06-19"
+
+  - name: 女频无限流+情感成长
+    platform: jinjiang
+    audience: 16-30岁女性，偏好强女主与细腻情感线
+    heat: ★★★★★
+    description: 在无限流框架下强化角色心理成长与亲密关系描写，副本设定更贴近现实焦虑（如职场、家庭、社交），情感线占比提升至40%以上。
+    keywords: [无限流, 女强, 情感成长, 心理疗愈, 多世界]
     competition: 中高
-    new_author_friendly: false
-    updated: "2026-06-19"
-  - name: 现代都市
-    platform: jinjiang
-    audience: 年轻女性
-    heat: ★★★★☆
-    description: 描述现代城市生活中的爱情、友情和职场斗争的故事。
-    keywords: [职场, 情感, 成长]
-    competition: 高
     new_author_friendly: true
     updated: "2026-06-19"
-  - name: 古代言情
-    platform: jinjiang
-    audience: 女性读者
-    heat: ★★★★☆
-    description: 以古代为背景的爱情故事，往往包含宫廷争斗、江湖恩怨等元素。
-    keywords: [宫廷, 武侠, 爱情]
-    competition: 高
-    new_author_friendly: false
-    updated: "2026-06-19"
-  - name: 科幻未来
+
+  - name: 轻量化系统文（快穿/任务流）
     platform: fanqie
-    audience: 广泛
+    audience: 15-25岁泛用户，偏好短平快节奏
     heat: ★★★★☆
-    description: 探索未来科技发展对人类社会的影响，包括太空探索、人工智能等主题。
-    keywords: [科技, 太空, AI]
-    competition: 中
+    description: 单章2000字以内，每3-5章完成一个任务单元，系统提示高度游戏化，适配短视频引流与碎片阅读。番茄小说该类目日活增长达120%（同比2025）。
+    keywords: [系统, 快穿, 任务流, 轻小说, 爽文]
+    competition: 极高
     new_author_friendly: true
     updated: "2026-06-19"
-  - name: 异能超自然
+
+  - name: 末世基建+群像经营
     platform: qidian
-    audience: 青少年至成年男性
+    audience: 22-40岁男性，偏好策略与长期发展叙事
     heat: ★★★★☆
-    description: 主角拥有特殊能力，在现实世界或者平行宇宙中解决各种问题的故事。
-    keywords: [超能力, 悬疑, 动作]
+    description: 后末世背景下聚焦资源管理、社区重建与势力博弈，弱化个人英雄主义，强调集体协作与制度构建。2026年Q2新书留存率同比提升35%。
+    keywords: [末世, 基建, 群像, 经营模拟, 生存策略]
     competition: 中
-    new_author_friendly: true
+    new_author_friendly: false
     updated: "2026-06-19"
-  - name: 历史穿越
+
+  - name: 古风悬疑+非遗元素
     platform: jinjiang
-    audience: 女性及部分男性历史爱好者
-    heat: ★★★☆☆
-    description: 主角穿越到过去的历史时期，通过个人努力改变命运甚至影响历史进程的故事。
-    keywords: [穿越, 历史, 改变命运]
+    audience: 18-35岁女性，文化兴趣浓厚群体
+    heat: ★★★★
+    description: 结合传统工艺（如缂丝、漆器、古琴）与悬疑探案，强调历史考据与美学表达。晋江2026年“国风计划”重点扶持赛道，签约率提升50%。
+    keywords: [古风, 悬疑, 非遗, 探案, 文化传承]
     competition: 中低
     new_author_friendly: true
     updated: "2026-06-19"
-  - name: 轻小说
+
+  - name: 都市异能+职场逆袭
     platform: fanqie
-    audience: 学生群体
-    heat: ★★★☆☆
-    description: 采用轻松幽默的语言风格讲述校园生活、奇幻冒险等内容的小说类型。
-    keywords: [校园, 幽默, 奇幻]
-    competition: 低
-    new_author_friendly: true
+    audience: 18-30岁下沉市场用户
+    heat: ★★★★
+    description: 主角在现代职场中觉醒特殊能力（如读心、时间回溯），解决职场困境并实现阶层跃迁。番茄“现实幻想”标签下播放量TOP3子类。
+    keywords: [都市异能, 职场, 逆袭, 现实幻想, 打脸爽文]
+    competition: 高
+    new_author_friendly: false
     updated: "2026-06-19"
-  - name: 文化传承
-    platform: jinjiang
-    audience: 对传统文化感兴趣的读者
-    heat: ★★★☆☆
-    description: 以中国传统文化为基础，讲述与之相关的家族秘密、传统技艺的传承等故事。
-    keywords: [文化, 家族, 传承]
+
+  - name: 星际种田+生态修复
+    platform: qidian
+    audience: 20-35岁科幻与环保议题关注者
+    heat: ★★★☆
+    description: 在星际殖民背景下，主角通过生物科技改造荒星、重建生态系统，融合硬核设定与慢节奏治愈叙事。起点科幻频道2026年新锐赛道。
+    keywords: [星际, 种田, 生态修复, 生物科技, 治愈]
     competition: 低
     new_author_friendly: true
     updated: "2026-06-19"

@@ -121,7 +121,7 @@ class ConsistencyCheckerPlugin(IQualityGate):
         prompt = f"""请从以下章节中提取所有硬事实（可量化/可验证的信息），以 JSON 返回。
 
 章节:
-{chapter_content[:3000]}
+{chapter_content[:6000]}
 
 返回格式:
 ```json
@@ -169,7 +169,7 @@ class ConsistencyCheckerPlugin(IQualityGate):
         settings_data: dict,
         characters_data: dict,
     ) -> str:
-        parts = [f"## 待检查章节 (第{chapter_num}章)\n{content[:4000]}"]
+        parts = [f"## 待检查章节 (第{chapter_num}章)\n{content[:8000]}"]
 
         if facts:
             entries = facts.get("entries", {})

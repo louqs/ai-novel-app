@@ -212,10 +212,22 @@ async def remove_provider(provider_name: str):
     if not registry:
         raise HTTPException(status_code=HTTP_404_NOT_FOUND)
     registry.unregister(provider_name)
-    # 持久化：从数据库的 provider 列表中删除
     if kernel.db:
+        # 从数据库的自定义 provider 列表中删除
         await kernel.db._exec("DELETE FROM providers WHERE name=?", (provider_name,))
+        # 标记配置文件中的 provider 为已删除（重启后不再加载）
+        await kernel.db.mark_config_provider_deleted(provider_name)
     return {"status": "ok", "message": f"Provider '{provider_name}' 已移除"}
+
+
+@router.post("/providers/{provider_name}/restore", response_model=dict)
+@router.post("/providers/{provider_name}/restore/", response_model=dict)
+async def restore_config_provider(provider_name: str):
+    """恢复被删除的配置文件 Provider（重启后生效）。"""
+    kernel = await get_kernel()
+    if kernel.db:
+        await kernel.db.restore_config_provider(provider_name)
+    return {"status": "ok", "message": f"Provider '{provider_name}' 将在下次启动时恢复"}
 
 
 @router.put("/providers/{provider_name}", response_model=dict)

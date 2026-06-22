@@ -45,6 +45,8 @@ class ProjectUpdate(BaseModel):
     one_liner: str | None = None
     status: str | None = None
     length: str | None = None
+    target_words_per_chapter: int | None = None
+    style_bible: str | None = None
 
 
 class ProjectResponse(BaseModel):

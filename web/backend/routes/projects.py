@@ -164,6 +164,15 @@ async def update_project(project_id: str, data: ProjectUpdate):
     except Exception:
         pass  # 文件更新失败不影响主流程
 
+    # 同步更新 context manager
+    try:
+        ns = f"project:{project_id}"
+        await kernel.context().set(ns, "meta", meta)
+        if "platform" in meta:
+            await kernel.context().set(ns, "platform", meta["platform"])
+    except Exception:
+        pass
+
     return meta
 
 
