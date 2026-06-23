@@ -114,19 +114,17 @@ class Kernel(IKernelAPI):
             except Exception:
                 logger.warning("Provider 注册失败", name=name, type=ptype)
 
-        # 从数据库加载额外 Provider
+        # 从数据库加载 Provider（数据库优先级高于配置文件，用户编辑过的配置会覆盖默认值）
         if self.db:
             for p in await self.db.list_providers_db():
                 name = p["name"]
-                if registry.get_adapter(name):
-                    continue  # 已存在
                 try:
                     adapter = OpenAICompatibleAdapter(
                         name=name, base_url=p.get("base_url",""),
                         api_key=p.get("api_key",""), default_model=p.get("default_model",""),
                     )
                     registry.register_adapter(adapter)
-                    logger.info("从数据库加载 Provider", name=name)
+                    logger.info("从数据库加载 Provider", name=name, source="db_override" if name in {pc.get("name") for pc in providers_cfg} else "db_only")
                 except Exception:
                     pass
 

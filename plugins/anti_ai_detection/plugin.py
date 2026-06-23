@@ -102,6 +102,76 @@ class AntiAIDetectionPlugin(IQualityGate):
                     suggestion="替换为具体悬念或冲突",
                 ))
 
+            # 4. De-AI 句式模板检测
+            sentence_tmpl = self._detector.check_sentence_templates(content)
+            if sentence_tmpl.get("is_excessive"):
+                issues.append(GateIssue(
+                    severity=Severity.ERROR,
+                    code="anti_ai.deai_sentence_templates",
+                    message=f"De-AI句式模板: {sentence_tmpl['suggestion']}",
+                    suggestion="删除模板句式，用具体事实和判断替代",
+                ))
+
+            # 5. De-AI 语气态度检测
+            tone_check = self._detector.check_tone_attitude(content)
+            if tone_check.get("is_excessive"):
+                issues.append(GateIssue(
+                    severity=Severity.WARNING,
+                    code="anti_ai.deai_tone",
+                    message=f"De-AI语气问题: {tone_check['suggestion']}",
+                    suggestion="删除协作沟通痕迹和谄媚语气",
+                ))
+
+            # 6. De-AI 硬阈值检测
+            hard_check = self._detector.check_hard_constraints(content)
+            if not hard_check.get("pass"):
+                issues.append(GateIssue(
+                    severity=Severity.ERROR,
+                    code="anti_ai.deai_hard_constraints",
+                    message=f"De-AI硬阈值违反: {hard_check['suggestion']}",
+                    suggestion="按12项硬阈值修复",
+                ))
+
+            # 7. 中文特化检测（儿化音/翻译腔/虚假亲昵）
+            cn_check = self._detector.check_chinese_specific(content)
+            if cn_check.get("is_excessive"):
+                issues.append(GateIssue(
+                    severity=Severity.ERROR,
+                    code="anti_ai.chinese_specific",
+                    message=f"中文特化问题: {cn_check['suggestion']}",
+                    suggestion="删除儿化音、翻译腔和虚假亲昵词",
+                ))
+
+            # 8. 小说特化检测（开头/结尾/情感/场景模板）
+            story_check = self._detector.check_story_patterns(content)
+            if story_check.get("is_excessive"):
+                issues.append(GateIssue(
+                    severity=Severity.WARNING,
+                    code="anti_ai.story_patterns",
+                    message=f"小说AI模式: {story_check['suggestion']}",
+                    suggestion="用具体细节替代模板化描写，开头直接切入，结尾克制",
+                ))
+
+            # 9. qu-ai-wei 51 类模式精选检测
+            quai_check = self._detector.check_quai_patterns(content)
+            if quai_check.get("is_excessive"):
+                issues.append(GateIssue(
+                    severity=Severity.WARNING,
+                    code="anti_ai.quai_patterns",
+                    message=f"qu-ai-wei模式: {quai_check['suggestion']}",
+                    suggestion="删除AI高频词堆砌、翻译腔残留、的的不休等问题",
+                ))
+
+            # 10. ximen-aimazi 频率控制检测
+            ximen_check = self._detector.check_ximen_patterns(content)
+            if ximen_check.get("is_excessive"):
+                issues.append(GateIssue(
+                    severity=Severity.WARNING,
+                    code="anti_ai.ximen_patterns",
+                    message=f"ximen频率控制: {ximen_check['suggestion']}",
+                    suggestion="弱化副词≤2/千字、情感标签≤1/千字、比喻词≤1/千字",
+                ))
+
             # 综合判定
             if any(i.severity == Severity.ERROR for i in issues):
                 verdict = GateVerdict.REVISE
@@ -142,6 +212,13 @@ class AntiAIDetectionPlugin(IQualityGate):
         humanizer_check = self._detector.check_humanizer_patterns(text)
         dialogue_check = self._detector.check_dialogue_quotes(text)
 
+        # De-AI 24 项检测系统
+        deai_vocab_check = self._detector.check_deai_vocabulary(text)
+        sentence_tmpl_check = self._detector.check_sentence_templates(text)
+        tone_check = self._detector.check_tone_attitude(text)
+        para_tmpl_check = self._detector.check_paragraph_templates(text)
+        hard_check = self._detector.check_hard_constraints(text)
+
         return {
             "ai_score": round(ai_score, 3),
             "is_likely_ai": ai_score < 0.6,
@@ -169,6 +246,20 @@ class AntiAIDetectionPlugin(IQualityGate):
             "cringe_monologue": cringe_check,
             "humanizer_patterns": humanizer_check,
             "dialogue_quotes": dialogue_check,
+            # De-AI 24 项检测
+            "deai_vocabulary": deai_vocab_check,
+            "deai_sentence_templates": sentence_tmpl_check,
+            "deai_tone_attitude": tone_check,
+            "deai_paragraph_templates": para_tmpl_check,
+            "deai_hard_constraints": hard_check,
+            # 中文特化检测
+            "chinese_specific": self._detector.check_chinese_specific(text),
+            # 小说特化检测
+            "story_patterns": self._detector.check_story_patterns(text),
+            # qu-ai-wei 51 类模式精选
+            "quai_patterns": self._detector.check_quai_patterns(text),
+            # ximen-aimazi 频率控制检测
+            "ximen_patterns": self._detector.check_ximen_patterns(text),
         }
 
     async def humanize(
@@ -182,7 +273,7 @@ class AntiAIDetectionPlugin(IQualityGate):
 
         Args:
             content: 原始文本.
-            mode: 改写深度 — light / standard / deep / three_axe / chaos.
+            mode: 改写深度 — light / standard / deep / three_axe / chaos / deai.
             novel_type: 小说类型（90年代乡土/港综/都市重生）.
             target_word_count: 目标字数.
         """

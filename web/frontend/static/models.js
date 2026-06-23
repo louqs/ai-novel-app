@@ -211,10 +211,14 @@ async function saveEdit() {
             toast('更新失败: ' + (err.detail || resp.status), 'error');
             return;
         }
+        var result = await resp.json();
         if (_providers[_editModelName]) {
             if (baseUrl) _providers[_editModelName].base_url = baseUrl;
-            if (model) { _providers[_editModelName].default_model = model; _providers[_editModelName].models = [model]; }
+            if (result.models) { _providers[_editModelName].models = result.models; }
+            else if (model) { _providers[_editModelName].models = [model]; }
+            if (result.default_model) { _providers[_editModelName].default_model = result.default_model; }
+            else if (model) { _providers[_editModelName].default_model = model; }
         }
-        _renderModelList(); closeEditModal(); toast('已更新', 'success');
+        _renderModelList(); _refreshTierDropdowns(); closeEditModal(); toast('已更新', 'success');
     } catch(e) { toast('更新失败: ' + e.message, 'error'); }
 }

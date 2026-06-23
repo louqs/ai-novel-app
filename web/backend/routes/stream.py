@@ -28,6 +28,77 @@ def _job_key(pid: str, vol: int, ch: int) -> str:
     return f"{pid}_{vol}_{ch}"
 
 
+# ---------------------------------------------------------------------------
+# 大纲生成任务管理（内存 + 数据库双重持久化）
+# ---------------------------------------------------------------------------
+
+# 内存缓存，加速访问；同时持久化到数据库，支持服务重启后恢复
+_outline_jobs: dict[str, dict] = {}
+
+
+async def _run_outline_generation(pid: str, num_versions: int = 3):
+    """后台执行大纲生成 — 通过 GenerationService 统一入口."""
+    from core.generation_service import GenerationService, STYLE_HINTS
+
+    try:
+        kernel = await get_kernel()
+        gs = GenerationService(kernel)
+        versions = []
+        _outline_jobs[pid] = {
+            "status": "generating", "versions": versions, "current": 0, "total": num_versions,
+            "message": "正在分析项目...", "ts": time.time(),
+        }
+
+        if kernel.db:
+            await kernel.db.save_outline_job(pid, "generating", num_versions, 0, [], "正在分析项目...")
+
+        # 通过 GenerationService 生成多版本
+        async def on_progress(vi: int, result):
+            _outline_jobs[pid]["current"] = vi + 1
+            _outline_jobs[pid]["message"] = f"正在生成版本 {vi + 1}/{num_versions}..."
+            _outline_jobs[pid]["ts"] = time.time()
+            if kernel.db:
+                await kernel.db.save_outline_job(pid, "generating", num_versions, vi + 1, versions,
+                    f"正在生成版本 {vi + 1}/{num_versions}...")
+
+            if result.success:
+                total_chs = sum(len(v.get("chapters", [])) for v in result.progress.get("volumes", []))
+                style_tag = result.style_hint.split("，")[0].replace("风格偏向", "") if result.style_hint else ""
+                version_data = {
+                    "data": result.progress,
+                    "volumes": len(result.progress.get("volumes", [])),
+                    "chapters": total_chs,
+                    "style_tag": style_tag,
+                }
+                versions.append(version_data)
+                if kernel.db:
+                    await kernel.db.save_outline_job(pid, "generating", num_versions, vi + 1, versions,
+                        f"已生成 {len(versions)}/{num_versions} 个版本...")
+
+        await gs.generate_outline_versions(pid, num_versions=num_versions, on_progress=on_progress)
+
+        _outline_jobs[pid]["status"] = "done"
+        _outline_jobs[pid]["message"] = f"生成完成，共 {len(versions)} 个方案"
+        _outline_jobs[pid]["ts"] = time.time()
+        if kernel.db:
+            await kernel.db.save_outline_job(pid, "done", num_versions, num_versions, versions,
+                f"生成完成，共 {len(versions)} 个方案")
+
+    except Exception as e:
+        if pid in _outline_jobs:
+            _outline_jobs[pid]["status"] = "error"
+            _outline_jobs[pid]["message"] = f"生成失败: {str(e)[:200]}"
+            _outline_jobs[pid]["ts"] = time.time()
+        if kernel.db:
+            try:
+                await kernel.db.save_outline_job(pid, "error", num_versions,
+                    _outline_jobs.get(pid, {}).get("current", 0),
+                    _outline_jobs.get(pid, {}).get("versions", []),
+                    f"生成失败: {str(e)[:200]}")
+            except Exception:
+                pass
+
+
 async def _run_chapter_generation(pid: str, ch_num: int, vol_num: int):
     """后台执行章节生成，完成后自动保存。不依赖 SSE 连接。"""
     key = _job_key(pid, vol_num, ch_num)
@@ -106,10 +177,13 @@ async def _run_chapter_generation(pid: str, ch_num: int, vol_num: int):
             _chapter_jobs[key]["content"] = full
             _chapter_jobs[key]["tokens"].append(token)
 
-        # 保存到数据库 + 文件
+        # 保存到数据库 + 文件（save_chapter 自动快照旧版本）
         cid = f"ch_v{vol_num:02d}_{ch_num:04d}"
         if kernel.db:
-            await kernel.db.save_chapter(cid, pid, ch_num, node.get("title", f"第{ch_num}章"), full, volume=vol_num)
+            await kernel.db.save_chapter(
+                cid, pid, ch_num, node.get("title", f"第{ch_num}章"), full,
+                volume=vol_num, snapshot_source="generate", snapshot_summary="流式生成新版本前自动快照",
+            )
             await kernel.db.update_project(pid, {"current_chapter": max(ch_num, 0), "updated_at": ""})
         await kernel.write_project_file(pid, f"chapters/{cid}.md", full)
 
@@ -142,6 +216,7 @@ class StreamChapterReq(BaseModel):
     project_id: str = ""
     chapter_number: int = Field(..., ge=1)
     volume_number: int = Field(default=1, ge=1)
+    force: bool = Field(default=False, description="强制重新生成，即使章节已存在")
 
 
 @router.post("/api/v1/stream/chapter")
@@ -154,14 +229,19 @@ async def stream_chapter(data: StreamChapterReq):
     pid = data.project_id
     ch_num = data.chapter_number
     vol_num = data.volume_number
+    force = data.force
     key = _job_key(pid, vol_num, ch_num)
+
+    # 如果强制重新生成，清除旧任务状态
+    if force and key in _chapter_jobs:
+        del _chapter_jobs[key]
 
     # 如果已有任务在运行或已完成，直接复用
     existing = _chapter_jobs.get(key)
     if existing and existing["status"] == "generating":
         pass  # 已在运行，SSE 会接上
-    elif existing and existing["status"] == "saved":
-        # 已完成，直接返回结果
+    elif existing and existing["status"] == "saved" and not force:
+        # 已完成且非强制模式，直接返回结果
         async def gen_done():
             yield f"data: {json.dumps({'status':'start'})}\n\n"
             yield f"data: {json.dumps({'token': existing['content']})}\n\n"
@@ -233,53 +313,26 @@ async def chapter_generation_status(project_id: str, vol_num: int, ch_num: int):
 
 @router.post("/api/v1/stream/outline")
 async def stream_outline(data: dict):
-    """流式生成大纲（单版本，向后兼容）。"""
+    """流式生成大纲（单版本） — 通过 GenerationService 统一入口."""
     kernel = await get_kernel()
     pid = data.get("project_id", "")
 
     async def gen():
         yield f"data: {json.dumps({'status':'progress','message':'正在分析项目...'})}\n\n"
         try:
-            ns = f"project:{pid}"
-            chars = await kernel.db.get_characters(pid) if kernel.db else {}
-            meta = await kernel.db.get_project(pid) if kernel.db else {}
-            platform = meta.get("platform", "fanqie") if meta else "fanqie"
-            one_liner = meta.get("one_liner", "") if meta else ""
-
-            char_list = []
-            for cid, c in chars.get("characters", {}).items():
-                if isinstance(c, dict):
-                    char_list.append(f"{c.get('name',cid)}: {'/'.join(c.get('personality_tags',[])[:3])}")
-            char_text = "\n".join(char_list) if char_list else "暂无人物"
+            from core.generation_service import GenerationService
+            gs = GenerationService(kernel)
 
             yield f"data: {json.dumps({'status':'progress','message':'正在规划卷结构...'})}\n\n"
-            prompt = f"规划2卷大纲，每卷10-15章。梗概:{one_liner}。人物:{char_text}。平台:{platform}。返回JSON:{{\"volumes\":[{{\"volume_number\":1,\"title\":\"\",\"arc_description\":\"\",\"chapters\":[{{\"chapter_number\":1,\"title\":\"\",\"summary\":\"\",\"key_events\":[],\"is_climax\":false,\"is_hook_point\":false}}]}}]}}"
 
-            full = ""
-            async for token in kernel.call_llm_stream(
-                [{"role": "system", "content": "你是网文大纲策划。只返回JSON。"}, {"role": "user", "content": prompt}],
-                tier="standard", max_tokens=8000,
-            ):
-                full += token
-                yield f"data: {json.dumps({'token': token, 'stage': 'outline'})}\n\n"
-
-            # 解析JSON
-            import re
-            m = re.search(r'\{[\s\S]*\}', full)
-            if m:
-                try:
-                    progress = json.loads(m.group())
-                    await kernel.context().set(ns, "progress", progress)
-                    await kernel.write_project_file(pid, "progress.json", json.dumps(progress, indent=2, ensure_ascii=False))
-                    # Also save to settings for the workbench
-                    if kernel.db:
-                        settings = await kernel.db.get_settings(pid)
-                        settings["progress"] = progress
-                        await kernel.db.save_settings(pid, settings)
-                    total_chs = sum(len(v.get("chapters",[])) for v in progress.get("volumes",[]))
-                    yield f"data: {json.dumps({'status':'saved','volumes':len(progress.get('volumes',[])),'chapters':total_chs})}\n\n"
-                except Exception:
-                    pass
+            result = await gs.generate_outline(pid)
+            if not result.success:
+                yield f"data: {json.dumps({'error': result.error[:200]})}\n\n"
+            else:
+                # 保存到 3 个存储
+                await gs.save_outline(pid, result.progress)
+                total_chs = sum(len(v.get("chapters", [])) for v in result.progress.get("volumes", []))
+                yield f"data: {json.dumps({'status':'saved','volumes':len(result.progress.get('volumes',[])),'chapters':total_chs})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
         yield f"data: {json.dumps({'status':'done'})}\n\n"
@@ -290,7 +343,7 @@ async def stream_outline(data: dict):
 
 @router.post("/api/v1/stream/outline-multi")
 async def stream_outline_multi(data: dict):
-    """流式生成多版本大纲。"""
+    """流式生成多版本大纲 — 通过 GenerationService 统一入口."""
     kernel = await get_kernel()
     pid = data.get("project_id", "")
     num_versions = data.get("versions", 3)
@@ -298,71 +351,21 @@ async def stream_outline_multi(data: dict):
     async def gen():
         yield f"data: {json.dumps({'status':'progress','message':'正在分析项目...'})}\n\n"
         try:
-            chars = await kernel.db.get_characters(pid) if kernel.db else {}
-            meta = await kernel.db.get_project(pid) if kernel.db else {}
-            platform = meta.get("platform", "fanqie") if meta else "fanqie"
-            one_liner = meta.get("one_liner", "") if meta else ""
-
-            char_list = []
-            for cid, c in chars.get("characters", {}).items():
-                if isinstance(c, dict):
-                    char_list.append(f"{c.get('name',cid)}: {'/'.join(c.get('personality_tags',[])[:3])}")
-            char_text = "\n".join(char_list) if char_list else "暂无人物"
-
-            style_hints = [
-                "风格偏向热血爽文，节奏快，冲突密集",
-                "风格偏向细腻情感，人物关系复杂，伏笔层层递进",
-                "风格偏向悬念推理，每章结尾反转，层层揭秘",
-                "风格偏向轻松日常，温馨治愈，穿插幽默",
-                "风格偏向史诗宏大，世界观广阔，势力博弈",
-            ]
+            from core.generation_service import GenerationService, STYLE_HINTS
+            gs = GenerationService(kernel)
 
             for vi in range(num_versions):
                 yield f"data: {json.dumps({'status':'progress','message':f'正在生成版本 {vi+1}/{num_versions}...'})}\n\n"
 
-                hint = style_hints[vi % len(style_hints)]
-                prompt = (
-                    f"规划2卷大纲，每卷10-15章。梗概:{one_liner}。人物:{char_text}。平台:{platform}。"
-                    f"特殊要求:{hint}。"
-                    f"返回JSON:{{\"volumes\":[{{\"volume_number\":1,\"title\":\"\",\"arc_description\":\"\","
-                    f"\"chapters\":[{{\"chapter_number\":1,\"title\":\"\",\"summary\":\"\",\"key_events\":[],\"is_climax\":false,\"is_hook_point\":false}}]}}]}}"
-                )
+                hint = STYLE_HINTS[vi % len(STYLE_HINTS)]
+                result = await gs.generate_outline(pid, style_hint=hint)
 
-                full = ""
-                # 用不同 temperature 增加多样性
-                temps = [0.7, 0.85, 0.9, 0.95, 1.0]
-                temp = temps[vi % len(temps)]
-
-                async for token in kernel.call_llm_stream(
-                    [{"role": "system", "content": "你是网文大纲策划。只返回JSON。"}, {"role": "user", "content": prompt}],
-                    tier="standard", max_tokens=8000, temperature=temp,
-                ):
-                    full += token
-
-                # 解析 JSON — 先尝试 code fence，再尝试裸 JSON
-                import re
-                progress = None
-                # 优先匹配 ```json ... ``` 代码块
-                m = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', full)
-                if m:
-                    try:
-                        progress = json.loads(m.group(1))
-                    except Exception:
-                        pass
-                # 降级：匹配最外层 {}
-                if not progress:
-                    m2 = re.search(r'\{[\s\S]*\}', full)
-                    if m2:
-                        try:
-                            progress = json.loads(m2.group())
-                        except Exception:
-                            pass
-                if progress and "volumes" in progress:
-                    total_chs = sum(len(v.get("chapters", [])) for v in progress.get("volumes", []))
+                if result.success:
+                    total_chs = sum(len(v.get("chapters", [])) for v in result.progress.get("volumes", []))
                     style_tag = hint.split("，")[0].replace("风格偏向", "") if hint else ""
-                    yield f"data: {json.dumps({'status':'version_ready','version':vi+1,'data':progress,'volumes':len(progress.get('volumes',[])),'chapters':total_chs,'style_tag':style_tag})}\n\n"
+                    yield f"data: {json.dumps({'status':'version_ready','version':vi+1,'data':result.progress,'volumes':len(result.progress.get('volumes',[])),'chapters':total_chs,'style_tag':style_tag})}\n\n"
                 else:
-                    yield f"data: {json.dumps({'status':'version_error','version':vi+1,'message':f'版本 {vi+1} 解析失败，已跳过'})}\n\n"
+                    yield f"data: {json.dumps({'status':'version_error','version':vi+1,'message':f'版本 {vi+1} 生成失败: {result.error[:100]}'})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
@@ -370,3 +373,99 @@ async def stream_outline_multi(data: dict):
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+
+# ---------------------------------------------------------------------------
+# 大纲生成 — 后端异步任务（支持页面切换后恢复状态）
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/v1/outline/generate-async")
+async def outline_generate_async(data: dict):
+    """启动大纲生成后台任务（不依赖 SSE 连接）.
+
+    body: {project_id: str, versions: int = 3}
+    返回任务状态，前端可轮询 /api/v1/outline/status/{pid} 查询进度。
+    """
+    pid = data.get("project_id", "")
+    num_versions = data.get("versions", 3)
+    if not pid:
+        return {"error": "需要 project_id"}
+
+    # 如果已有任务在运行（内存中），直接返回状态
+    if pid in _outline_jobs and _outline_jobs[pid].get("status") == "generating":
+        return {"status": "already_running", **_outline_jobs[pid]}
+
+    # 检查数据库中是否有进行中的任务
+    kernel = await get_kernel()
+    if kernel.db:
+        db_job = await kernel.db.get_outline_job(pid)
+        if db_job and db_job.get("status") == "generating":
+            # 恢复到内存并继续
+            _outline_jobs[pid] = {
+                "status": db_job["status"],
+                "versions": db_job.get("versions", []),
+                "current": db_job.get("current", 0),
+                "total": db_job.get("total", 3),
+                "message": db_job.get("message", ""),
+                "ts": time.time(),
+            }
+            # 重新启动生成任务，从上次完成的版本继续
+            asyncio.create_task(_run_outline_generation(pid, num_versions))
+            return {"status": "resumed", "message": "恢复中断的大纲生成"}
+
+    # 启动后台任务
+    asyncio.create_task(_run_outline_generation(pid, num_versions))
+    return {"status": "started", "message": "大纲生成已启动"}
+
+
+@router.get("/api/v1/outline/status/{pid}")
+async def outline_status(pid: str):
+    """查询大纲生成任务状态.
+
+    返回:
+    - status: "generating" | "done" | "error" | "not_found"
+    - versions: 已生成的版本列表（done 时可用）
+    - current: 当前正在生成第几个版本
+    - total: 总共要生成几个版本
+    - message: 状态描述
+    """
+    # 先检查内存缓存
+    if pid in _outline_jobs:
+        job = _outline_jobs[pid]
+        return {
+            "status": job["status"],
+            "versions": job.get("versions", []),
+            "current": job.get("current", 0),
+            "total": job.get("total", 0),
+            "message": job.get("message", ""),
+            "ts": job.get("ts", 0),
+        }
+
+    # 内存中没有，检查数据库（支持服务重启后恢复）
+    kernel = await get_kernel()
+    if kernel.db:
+        db_job = await kernel.db.get_outline_job(pid)
+        if db_job:
+            return {
+                "status": db_job["status"],
+                "versions": db_job.get("versions", []),
+                "current": db_job.get("current", 0),
+                "total": db_job.get("total", 0),
+                "message": db_job.get("message", ""),
+                "from_db": True,
+            }
+
+    return {"status": "not_found", "message": "没有进行中的大纲生成任务"}
+
+
+@router.delete("/api/v1/outline/status/{pid}")
+async def outline_status_clear(pid: str):
+    """清除大纲生成任务状态（前端在用户确认后调用）."""
+    if pid in _outline_jobs:
+        del _outline_jobs[pid]
+    # 同时清除数据库中的状态
+    kernel = await get_kernel()
+    if kernel.db:
+        await kernel.db.delete_outline_job(pid)
+    return {"status": "cleared"}

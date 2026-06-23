@@ -2,7 +2,7 @@
 
 var platformNames = {fanqie:'番茄小说', qidian:'起点中文网', jinjiang:'晋江文学城', qimao:'七猫小说', douban:'豆瓣阅读'};
 var lengthNames = {short:'短篇', medium:'中篇', long:'长篇', extra_long:'超长篇'};
-var lengthWordRanges = {short:{min:10000,max:50000}, medium:{min:50000,max:150000}, long:{min:150000,max:500000}, extra_long:{min:50000,max:10000000}};
+var lengthWordRanges = {short:{min:10000,max:50000}, medium:{min:50000,max:150000}, long:{min:150000,max:500000}, extra_long:{min:500000,max:7000000}};
 
 (async function init() { await loadProjects(); })();
 

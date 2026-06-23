@@ -33,7 +33,7 @@ async function genPrompt() {
     resultCard.style.display = 'block';
     promptDisplay.textContent = '生成中...';
     try {
-        var resp = await fetch('/api/v1/cover/prompt', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: title, style: style, one_liner: oneliner})});
+        var resp = await fetch('/api/v1/images/cover/prompt', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: title, style: style, one_liner: oneliner})});
         var d = await resp.json();
         if (d.prompt) promptDisplay.textContent = d.prompt;
         else promptDisplay.textContent = d.error || '生成失败';

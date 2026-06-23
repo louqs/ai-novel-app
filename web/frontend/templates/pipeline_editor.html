@@ -1,0 +1,323 @@
+{% extends "base.html" %}
+{% block title %}编辑优化工作流{% endblock %}{% block nav_pipeline %}active{% endblock %}{% block page_title %}编辑优化工作流{% endblock %}
+
+{% block head %}
+<style>
+/* 流水线步骤导航 */
+.pipeline-steps{display:flex;gap:4px;margin-bottom:16px}
+.pipeline-step{flex:1;padding:10px 12px;background:var(--surface2);border:2px solid var(--border);border-radius:8px;text-align:center;cursor:pointer;transition:all 0.2s}
+.pipeline-step.active{border-color:var(--accent);background:rgba(124,92,252,0.08)}
+.pipeline-step.done{border-color:var(--ok);background:rgba(76,175,80,0.08)}
+.pipeline-step.error{border-color:var(--bad);background:rgba(244,67,54,0.08)}
+.pipeline-step .step-icon{font-size:20px;display:block;margin-bottom:4px}
+.pipeline-step .step-name{font-size:12px;font-weight:600;color:var(--text)}
+.pipeline-step .step-status{font-size:10px;color:var(--text-muted);margin-top:2px}
+.pipeline-step.running .step-status{color:var(--accent)}
+
+/* 步骤配置 */
+.pipeline-config{background:var(--surface2);border-radius:8px;padding:12px;margin-bottom:16px}
+.pipeline-config .config-row{display:flex;gap:12px;align-items:flex-end;margin-bottom:8px;flex-wrap:wrap}
+.pipeline-config .field-group{display:flex;flex-direction:column;gap:4px}
+.pipeline-config .field-group label{font-size:11px;color:var(--text-muted);font-weight:500}
+.pipeline-config select,.pipeline-config input{padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;min-height:32px}
+
+/* 源切换 */
+.source-tabs{display:flex;gap:4px;margin-bottom:12px}
+.source-tab{padding:8px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:12px;transition:all 0.2s}
+.source-tab.active{background:var(--accent);color:white;border-color:var(--accent)}
+.source-tab:hover:not(.active){background:var(--surface)}
+
+/* 批量进度 */
+.batch-progress{background:var(--surface2);border-radius:8px;padding:12px;margin-top:12px}
+.batch-item{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
+.batch-item:last-child{border-bottom:none}
+.batch-item .status-icon{width:20px;text-align:center}
+.batch-item .chapter-name{flex:1;font-size:12px}
+.batch-item .score{font-size:11px;color:var(--text-muted)}
+
+/* 结果面板 */
+.step-result{display:none;margin-bottom:16px}
+.step-result.active{display:block}
+.result-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.result-header h3{margin:0;font-size:14px}
+.result-summary{font-size:12px;color:var(--text-muted);padding:8px 12px;background:var(--surface2);border-radius:6px;margin-bottom:12px}
+
+/* 操作按钮 */
+.pipeline-actions{display:flex;gap:8px;justify-content:flex-end;padding:12px 0;border-top:1px solid var(--border)}
+
+/* 文件上传区域 */
+.upload-area{border:2px dashed var(--border);border-radius:8px;padding:20px;text-align:center;cursor:pointer;transition:all 0.2s}
+.upload-area:hover{border-color:var(--accent);background:rgba(124,92,252,0.05)}
+.upload-area.dragover{border-color:var(--accent);background:rgba(124,92,252,0.1)}
+
+/* 加载动画 */
+@keyframes loadingDots {
+    0%, 20% { content: '.'; }
+    40% { content: '..'; }
+    60%, 100% { content: '...'; }
+}
+.loading-dots::after {
+    content: '';
+    animation: loadingDots 1.5s infinite;
+}
+.loading-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.3);z-index:9999;display:flex;justify-content:center;align-items:center}
+.loading-card{background:var(--surface);border-radius:12px;padding:24px 32px;box-shadow:0 8px 32px rgba(0,0,0,0.3);text-align:center;max-width:400px}
+.loading-card .spinner{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* 章节列表容器 */
+.chapter-list-container{max-height:300px;overflow-y:auto;margin-top:8px;border:1px solid var(--border);border-radius:6px;padding:8px}
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- 加载遮罩 -->
+<div id="pe-loading-overlay" class="loading-overlay" style="display:none">
+    <div class="loading-card">
+        <div class="spinner"></div>
+        <div style="font-size:14px;font-weight:600;margin-bottom:8px">AI 正在处理中...</div>
+        <div id="pe-loading-msg" style="font-size:12px;color:var(--text-muted)">正在分析文本，请稍候</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:12px">首次调用可能需要 30-60 秒</div>
+    </div>
+</div>
+
+<div style="max-width:1200px;margin:0 auto">
+    <!-- 顶部配置区 -->
+    <div class="pipeline-config">
+        <!-- 文本来源切换 -->
+        <div class="source-tabs">
+            <div class="source-tab active" onclick="peSwitchSource('project')" id="source-project">📚 项目章节</div>
+            <div class="source-tab" onclick="peSwitchSource('paste')" id="source-paste">📋 粘贴文本</div>
+            <div class="source-tab" onclick="peSwitchSource('file')" id="source-file">📁 导入文件</div>
+        </div>
+
+        <!-- 项目章节模式 -->
+        <div id="source-panel-project">
+            <div class="config-row">
+                <div class="field-group" style="flex:1">
+                    <label>选择项目</label>
+                    <select id="pe-project" onchange="peLoadProject(this.value)" style="width:100%">
+                        <option value="">选择项目...</option>
+                    </select>
+                </div>
+                <div class="field-group" style="min-width:150px">
+                    <label>审查范围</label>
+                    <select id="pe-range" onchange="peUpdateRange()">
+                        <option value="single">单章优化</option>
+                        <option value="selected">选中章节</option>
+                        <option value="all">整个项目</option>
+                        <option value="unchecked">未审查章节</option>
+                    </select>
+                </div>
+            </div>
+            <!-- 单章选择 -->
+            <div id="pe-single-chapter-row" class="config-row">
+                <div class="field-group" style="flex:1">
+                    <label>选择章节</label>
+                    <select id="pe-chapter" onchange="peSelectChapter()" style="width:100%">
+                        <option value="">选择章节...</option>
+                    </select>
+                </div>
+            </div>
+            <!-- 批量章节列表 -->
+            <div id="pe-batch-chapter-panel" style="display:none">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+                    <span style="font-size:11px;color:var(--text-muted)">已选 <span id="pe-batch-selected">0</span> 章</span>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn btn-sm" onclick="peBatchSelectAll()">全选</button>
+                        <button class="btn btn-sm" onclick="peBatchSelectNone()">全不选</button>
+                    </div>
+                </div>
+                <div class="chapter-list-container" id="pe-batch-chapter-list"></div>
+            </div>
+        </div>
+
+        <!-- 粘贴文本模式 -->
+        <div id="source-panel-paste" style="display:none">
+            <div class="config-row">
+                <div class="field-group" style="flex:1">
+                    <label>平台风格</label>
+                    <select id="pe-paste-platform" style="width:100%">
+                        <option value="fanqie">🍅 番茄小说</option>
+                        <option value="qidian">📖 起点中文网</option>
+                        <option value="jinjiang">🌸 晋江文学城</option>
+                    </select>
+                </div>
+            </div>
+            <div style="margin-top:8px">
+                <textarea id="pe-paste-content" rows="8" placeholder="粘贴你要优化的小说文本（建议500字以上）..." style="width:100%;padding:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;line-height:1.8;font-family:inherit;resize:vertical"></textarea>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
+                    <span id="pe-paste-char-count" style="font-size:11px;color:var(--text-muted)">0 字</span>
+                    <button class="btn btn-sm" onclick="peClearPaste()">清空</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 导入文件模式 -->
+        <div id="source-panel-file" style="display:none">
+            <div class="config-row">
+                <div class="field-group" style="flex:1">
+                    <label>平台风格</label>
+                    <select id="pe-file-platform" style="width:100%">
+                        <option value="fanqie">🍅 番茄小说</option>
+                        <option value="qidian">📖 起点中文网</option>
+                        <option value="jinjiang">🌸 晋江文学城</option>
+                    </select>
+                </div>
+            </div>
+            <div style="margin-top:8px">
+                <div class="upload-area" id="pe-upload-area" onclick="document.getElementById('pe-file-input').click()">
+                    <div style="font-size:32px;margin-bottom:8px">📁</div>
+                    <div style="font-size:13px;font-weight:600">点击或拖拽文件到此处</div>
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:4px">支持 .txt .md 格式</div>
+                </div>
+                <input type="file" id="pe-file-input" accept=".txt,.md" style="display:none" onchange="peHandleFileSelect(event)">
+                <div id="pe-file-info" style="display:none;margin-top:8px;padding:8px;background:var(--surface2);border-radius:6px;font-size:12px">
+                    <div style="display:flex;justify-content:space-between;align-items:center">
+                        <span id="pe-file-name">-</span>
+                        <button class="btn btn-sm" onclick="peClearFile()">✕ 移除</button>
+                    </div>
+                    <div id="pe-file-size" style="color:var(--text-muted);margin-top:4px">-</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 共享配置 -->
+        <div class="config-row" style="margin-top:12px">
+            <div class="field-group">
+                <label>执行步骤</label>
+                <div style="display:flex;gap:12px;align-items:center">
+                    <label style="min-width:auto;cursor:pointer;display:flex;align-items:center;gap:4px"><input type="checkbox" id="pe-step-annotate" checked> 📋 编辑批注</label>
+                    <label style="min-width:auto;cursor:pointer;display:flex;align-items:center;gap:4px"><input type="checkbox" id="pe-step-coach" checked> 🏋️ 写作教练</label>
+                    <label style="min-width:auto;cursor:pointer;display:flex;align-items:center;gap:4px"><input type="checkbox" id="pe-step-detect" checked> 🔍 AI检测降重</label>
+                </div>
+            </div>
+            <div class="field-group">
+                <label>AI率阈值</label>
+                <div style="display:flex;align-items:center;gap:4px">
+                    <input type="number" id="pe-threshold" value="30" min="0" max="100" style="width:60px">
+                    <span style="font-size:11px;color:var(--text-muted)">%</span>
+                </div>
+            </div>
+            <div class="field-group">
+                <label>降重模式</label>
+                <select id="pe-hum-mode">
+                    <option value="light">轻度</option>
+                    <option value="standard" selected>标准</option>
+                    <option value="deep">深度</option>
+                    <option value="three_axe">三轴</option>
+                    <option value="chaos">混沌口语</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- 操作按钮 -->
+        <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="btn btn-primary" onclick="peStart()" id="btn-pe-start">🚀 开始优化</button>
+            <button class="btn" onclick="peCancel()" id="btn-pe-cancel" style="display:none">⏹ 停止</button>
+            <span id="pe-status" style="font-size:11px;color:var(--text-muted);align-self:center"></span>
+        </div>
+
+        <!-- 批量进度 -->
+        <div id="pe-batch-progress" class="batch-progress" style="display:none">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <span style="font-size:12px;font-weight:600">审查进度</span>
+                <span id="pe-batch-progress-text" style="font-size:11px;color:var(--text-muted)">0/0</span>
+            </div>
+            <div style="width:100%;height:6px;background:var(--bg);border-radius:3px;overflow:hidden">
+                <div id="pe-batch-bar" style="width:0%;height:100%;background:var(--accent);transition:width 0.3s;border-radius:3px"></div>
+            </div>
+            <div id="pe-batch-items" style="margin-top:8px;max-height:200px;overflow-y:auto"></div>
+        </div>
+    </div>
+
+    <!-- 步骤导航 -->
+    <div class="pipeline-steps" id="pe-steps-nav">
+        <div class="pipeline-step" id="pe-step-nav-annotate" onclick="peShowStep('annotate')">
+            <span class="step-icon">📋</span>
+            <span class="step-name">编辑批注</span>
+            <span class="step-status">待执行</span>
+        </div>
+        <div class="pipeline-step" id="pe-step-nav-coach" onclick="peShowStep('coach')">
+            <span class="step-icon">🏋️</span>
+            <span class="step-name">写作教练</span>
+            <span class="step-status">待执行</span>
+        </div>
+        <div class="pipeline-step" id="pe-step-nav-detect" onclick="peShowStep('detect')">
+            <span class="step-icon">🔍</span>
+            <span class="step-name">AI检测降重</span>
+            <span class="step-status">待执行</span>
+        </div>
+    </div>
+
+    <!-- 主体：三栏对比 -->
+    <div style="display:flex;gap:12px;min-height:500px">
+        <!-- 左栏：原文 -->
+        <div style="flex:1;display:flex;flex-direction:column">
+            <div style="padding:8px 12px;background:var(--surface2);border-radius:8px 8px 0 0;font-size:12px;font-weight:600">
+                📄 原文 <span id="pe-orig-count" style="color:var(--text-muted);font-weight:400;margin-left:8px">0 字</span>
+            </div>
+            <textarea id="pe-col-original" style="flex:1;padding:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;resize:none;font-size:13px;line-height:1.8;font-family:inherit" readonly></textarea>
+        </div>
+        <!-- 中栏：改写卡片 -->
+        <div style="flex:1;display:flex;flex-direction:column">
+            <div style="padding:8px 12px;background:var(--surface2);border-radius:8px 8px 0 0;font-size:12px;font-weight:600;display:flex;justify-content:space-between">
+                <span>🔄 改写建议</span>
+                <span>
+                    <button class="btn btn-sm" onclick="peBatchAccept()" style="font-size:10px">✓ 全选</button>
+                    <button class="btn btn-sm" onclick="peBatchReject()" style="font-size:10px">✗ 全否</button>
+                </span>
+            </div>
+            <div id="pe-col-diffs" style="flex:1;padding:12px;background:var(--bg);border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;overflow-y:auto;font-size:12px">
+                <p class="muted" style="text-align:center;padding:40px">开始优化后显示改写建议</p>
+            </div>
+            <div id="pe-merge-stats" style="padding:4px 12px;font-size:10px;color:var(--text-muted);text-align:right"></div>
+        </div>
+        <!-- 右栏：合并结果 -->
+        <div style="flex:1;display:flex;flex-direction:column">
+            <div style="padding:8px 12px;background:var(--surface2);border-radius:8px 8px 0 0;font-size:12px;font-weight:600;display:flex;justify-content:space-between">
+                <span>✅ 合并结果 <span id="pe-final-count" style="color:var(--text-muted);font-weight:400">0 字</span></span>
+                <span>
+                    <button class="btn btn-sm btn-primary" onclick="peSaveResult()" style="font-size:10px">💾 保存到章节</button>
+                    <button class="btn btn-sm" onclick="peCopyResult()" style="font-size:10px">📋 复制</button>
+                </span>
+            </div>
+            <textarea id="pe-col-final" style="flex:1;padding:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;resize:none;font-size:13px;line-height:1.8;font-family:inherit" oninput="peUpdateFinalCount()"></textarea>
+        </div>
+    </div>
+
+    <!-- 步骤详情面板 -->
+    <div id="pe-step-detail" style="display:none;margin-top:16px;padding:12px;background:var(--surface2);border-radius:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <strong id="pe-detail-title" style="font-size:13px"></strong>
+            <button class="btn btn-sm" onclick="document.getElementById('pe-step-detail').style.display='none'">收起</button>
+        </div>
+        <div id="pe-detail-content" style="font-size:12px;max-height:300px;overflow-y:auto"></div>
+    </div>
+</div>
+
+<!-- 编辑卡片弹窗 -->
+<div id="pe-edit-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:1001;justify-content:center;align-items:center">
+    <div style="background:var(--surface);border-radius:12px;width:500px;max-width:90%;overflow:hidden">
+        <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+            <strong>✏️ 编辑段落 #<span id="pe-edit-seg-num"></span></strong>
+            <button class="btn btn-sm" onclick="peCloseEditModal()">✕</button>
+        </div>
+        <div style="padding:16px">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">原文：</div>
+            <div id="pe-edit-orig" style="font-size:12px;padding:8px;background:var(--bg);border-radius:4px;margin-bottom:12px;max-height:100px;overflow-y:auto"></div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">修改：</div>
+            <textarea id="pe-edit-content" rows="5" style="width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;line-height:1.6;font-family:inherit;resize:vertical"></textarea>
+            <div id="pe-edit-char-count" style="font-size:10px;color:var(--text-muted);text-align:right;margin-top:4px">0 字</div>
+        </div>
+        <div style="padding:8px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px">
+            <button class="btn btn-sm" onclick="peRestoreSystemVersion()">恢复系统版本</button>
+            <button class="btn btn-primary btn-sm" onclick="peSaveEdit()">保存修改</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/pipeline_editor.js?v=5"></script>
+{% endblock %}

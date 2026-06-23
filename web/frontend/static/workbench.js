@@ -193,6 +193,7 @@ async function loadProject(pid) {
     document.getElementById('word-count').textContent = '0 字';
     document.getElementById('btn-outline').disabled = false;
     document.getElementById('btn-batch').disabled = false;
+    document.getElementById('btn-ol-versions').disabled = false;
     outlineData = null;
     currentChapterNum = 0;
     currentVolumeNum = 1;
@@ -206,15 +207,20 @@ async function loadProject(pid) {
         document.getElementById('project-info').innerHTML = '<div><strong>' + proj.title + '</strong></div><div class="muted">' + platName + ' | ' + lenName + ' | ' + chText + '</div><div style="margin-top:4px"><a href="/reader?project_id=' + pid + '" target="_blank" style="font-size:11px;color:var(--accent);text-decoration:none">📖 阅读模式</a></div>';
         window.history.replaceState({}, '', '?project_id=' + pid);
         await loadOutline(); await loadCharactersMini(); await loadStyleBible(pid); await loadMiniGraph();
+        // 恢复 sessionStorage 中保存的大纲方案
         var savedVers = _loadOutlineVersions(pid);
         if (savedVers.length > 0) {
             _outlineVersions = savedVers;
-            // 在大纲树中显示提示，不自动弹窗
+            // 如果大纲树为空或显示"暂无"，显示恢复提示
             var tree = document.getElementById('outline-tree');
-            if (tree && tree.querySelector('.muted') && tree.querySelector('.muted').textContent.includes('暂无')) {
-                tree.innerHTML = '<p class="muted">已有 ' + savedVers.length + ' 个待选方案</p><button class="btn btn-sm btn-primary" style="margin-top:8px;width:100%" onclick="renderVersionCards(_outlineVersions)">📋 查看方案</button>';
+            var treeIsEmpty = !outlineData || !outlineData.volumes || outlineData.volumes.length === 0;
+            if (treeIsEmpty) {
+                tree.innerHTML = '<p class="muted">已有 ' + savedVers.length + ' 个待选方案（来自上次生成）</p>' +
+                    '<button class="btn btn-sm btn-primary" style="margin-top:8px;width:100%" onclick="renderVersionCards(_outlineVersions)">📋 查看方案</button>';
             }
         }
+        // 检查是否有进行中的大纲生成任务
+        await _checkOutlineGenerationStatus(pid);
     } catch(e) { document.getElementById('project-info').innerHTML = '<p class="error">加载失败</p>'; }
 }
 
@@ -340,6 +346,7 @@ function selectChapter(num, el, volNum) {
     document.getElementById('current-chapter-label').textContent = '第' + currentVolumeNum + '卷第' + num + '章: ' + title;
     document.getElementById('btn-ab').disabled = false;
     document.getElementById('btn-annotate').disabled = false;
+    document.getElementById('btn-ch-versions').disabled = false;
     var ta = document.getElementById('chapter-content');
     ta.value = ''; ta.disabled = false; updateWordCount();
     document.querySelectorAll('.outline-chapter.active').forEach(function(e) { e.classList.remove('active'); });
@@ -398,6 +405,8 @@ async function generateStream() {
     if (!currentProjectId || !currentChapterNum) return;
     if (_isGeneratingChapter) { toast('请等待当前章节生成完成', 'info'); return; }
     var ta = document.getElementById('chapter-content');
+    // 检查章节是否已有内容，如果有则强制重新生成
+    var hasContent = !!(ta.value && ta.value.trim().length > 0 && !ta.value.startsWith('加载中'));
     document.getElementById('btn-generate').disabled = true;
     _isGeneratingChapter = true;
     _chapterAbortCtrl = new AbortController();
@@ -411,7 +420,7 @@ async function generateStream() {
     _activeStreams[genKey] = {vol: genVol, ch: genCh, abortCtrl: _chapterAbortCtrl, bufferedText: '', done: false, error: null};
     try {
         var resp = await fetch('/api/v1/stream/chapter', {method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({project_id: currentProjectId, chapter_number: genCh, volume_number: genVol}), signal: signal});
+            body: JSON.stringify({project_id: currentProjectId, chapter_number: genCh, volume_number: genVol, force: hasContent}), signal: signal});
         var reader = resp.body.getReader(); var decoder = new TextDecoder(); var buffer = '';
         while (true) {
             var result = await reader.read(); if (result.done) break;
@@ -428,13 +437,12 @@ async function generateStream() {
                         if (d.status === 'saved') {
                             _activeStreams[genKey].done = true;
                             _clearGenerating(currentProjectId, genVol, genCh);
-                            // 始终更新大纲数据和刷新大纲树（绿色标识）
+                            // 立即更新大纲树（不经过 loadProject 避免闪烁）
                             if (outlineData) outlineData.volumes.forEach(function(v) { if (v.volume_number === genVol) { v.chapters.forEach(function(ch) { if (ch.chapter_number === genCh) ch.status = 'completed'; }); } });
                             _renderOutlineTree();
                             if (currentVolumeNum === genVol && currentChapterNum === genCh) {
                                 toast('已保存 (' + d.word_count + '字)', 'success');
                                 updateWordCount();
-                                loadProject(currentProjectId);
                             }
                         }
                         if (d.error) {
@@ -500,6 +508,7 @@ async function _startBatchGeneration(pending, startIdx) {
     progDiv.style.display = 'block';
     document.getElementById('btn-batch').disabled = true;
     document.getElementById('btn-generate').disabled = true;
+    var isResume = (startIdx > 0);
     var total = pending.length, done = isResume ? startIdx : 0, failed = 0;
     for (var i = (startIdx || 0); i < pending.length; i++) {
         if (_batchCancelled) { statusBar.textContent = '已停止'; _clearBatchHighlight(); _clearBatchState(); break; }
@@ -555,7 +564,7 @@ async function _startBatchGeneration(pending, startIdx) {
     statusBar.textContent = wasCancelled ? '已停止' : '批量完成';
     detail.textContent = '成功 ' + done + ' 章' + (failed > 0 ? '，失败 ' + failed + ' 章' : '');
     bar.style.width = wasCancelled ? bar.style.width : '100%';
-    loadOutline(); loadProject(currentProjectId);
+    loadOutline();
     document.getElementById('btn-batch').disabled = false;
     document.getElementById('btn-generate').disabled = false;
     document.getElementById('btn-cancel-batch').disabled = false;
@@ -749,10 +758,11 @@ async function saveChapter() {
     var content = document.getElementById('chapter-content').value;
     if (!currentProjectId || !currentChapterNum || !content) return;
     try {
-        await fetch('/api/v1/projects/' + currentProjectId + '/chapters/' + currentChapterNum, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({content: content})});
-        if (outlineData) outlineData.volumes.forEach(function(v) { v.chapters.forEach(function(ch) { if (ch.chapter_number === currentChapterNum) ch.status = 'completed'; }); });
-        loadOutline();
-    } catch(e) { toast('保存失败', 'error'); }
+        await fetch('/api/v1/projects/' + currentProjectId + '/chapters/' + currentChapterNum, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({content: content, volume_number: currentVolumeNum})});
+        if (outlineData) outlineData.volumes.forEach(function(v) { if (v.volume_number === currentVolumeNum) { v.chapters.forEach(function(ch) { if (ch.chapter_number === currentChapterNum) ch.status = 'completed'; }); } });
+        _renderOutlineTree();
+        toast('已保存', 'success');
+    } catch(e) { toast('保存失败: ' + e.message, 'error'); }
 }
 
 // ===== Word Count =====
@@ -841,40 +851,291 @@ async function incubateIdea() {
 async function generateOutline() {
     if (!currentProjectId) return;
     var btn = document.getElementById('btn-outline'); btn.disabled = true; btn.textContent = '生成中...';
-    var tree = document.getElementById('outline-tree'); tree.innerHTML = '<p class="muted">⏳ 生成3个版本大纲中...</p>';
-    _outlineVersions = []; _clearOutlineVersions(currentProjectId);
-    var errors = [];
+    var tree = document.getElementById('outline-tree'); tree.innerHTML = '<p class="muted">⏳ 启动大纲生成...</p>';
+    _outlineVersions = [];
+
     try {
-        var resp = await fetch('/api/v1/stream/outline-multi', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({project_id: currentProjectId, versions: 3})});
-        var reader = resp.body.getReader(); var decoder = new TextDecoder(); var buffer = '';
-        while (true) {
-            var result = await reader.read(); if (result.done) break;
-            buffer += decoder.decode(result.value, {stream: true});
-            var lines = buffer.split('\n'); buffer = lines.pop() || '';
-            for (var li = 0; li < lines.length; li++) {
-                if (lines[li].startsWith('data: ')) {
-                    try {
-                        var d = JSON.parse(lines[li].slice(6));
-                        if (d.status === 'progress') tree.innerHTML = '<p class="muted">⏳ ' + d.message + '</p>';
-                        if (d.status === 'version_ready') { d.data._style_tag = d.style_tag || ''; _outlineVersions.push(d.data); tree.innerHTML = '<p class="muted">⏳ 已生成 ' + _outlineVersions.length + '/3 个版本...</p>'; }
-                        if (d.status === 'version_error') errors.push(d.message || ('版本' + d.version + '失败'));
-                        if (d.status === 'done') {
-                            if (_outlineVersions.length > 0) {
-                                tree.innerHTML = '<p class="muted">✅ 已生成 ' + _outlineVersions.length + ' 个方案，点击「生成」查看</p>';
-                                renderVersionCards(_outlineVersions);
-                                _saveOutlineVersions(_outlineVersions, currentProjectId);
-                                if (errors.length > 0) toast('部分版本生成失败: ' + errors.join('; '), 'info');
-                            } else {
-                                tree.innerHTML = '<p class="muted">未生成有效大纲</p>';
-                                toast('所有版本均生成失败', 'error');
-                            }
-                        }
-                    } catch(e) {}
-                }
-            }
+        // 使用异步接口启动后台生成
+        var resp = await fetch('/api/v1/outline/generate-async', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({project_id: currentProjectId, versions: 3})
+        });
+        var data = await resp.json();
+
+        if (data.status === 'already_running') {
+            toast('大纲生成已在进行中，请等待', 'info');
+        } else {
+            toast('大纲生成已启动', 'info');
         }
-    } catch(e) { toast('生成失败', 'error'); tree.innerHTML = '<p class="muted">生成失败</p>'; }
-    btn.disabled = false; btn.textContent = '生成';
+
+        // 开始轮询状态
+        _pollOutlineStatus();
+    } catch(e) {
+        toast('启动生成失败: ' + e.message, 'error');
+        tree.innerHTML = '<p class="muted">启动失败</p>';
+        btn.disabled = false; btn.textContent = '生成';
+    }
+}
+
+// 轮询大纲生成状态
+var _outlinePollTimer = null;
+
+// 页面加载时检查是否有进行中的大纲生成任务
+async function _checkOutlineGenerationStatus(pid) {
+    if (!pid) return;
+    try {
+        var resp = await fetch('/api/v1/outline/status/' + pid);
+        var data = await resp.json();
+
+        if (data.status === 'generating') {
+            // 有进行中的任务，开始轮询
+            toast('检测到进行中的大纲生成，正在恢复状态...', 'info');
+            document.getElementById('btn-outline').disabled = true;
+            document.getElementById('btn-outline').textContent = '生成中...';
+            _pollOutlineStatus();
+            return;
+        }
+
+        if (data.status === 'done' && data.versions && data.versions.length > 0) {
+            // 有已完成但未领取的结果（可能是服务重启后恢复的）
+            _outlineVersions = data.versions.map(function(v) {
+                v.data._style_tag = v.style_tag || '';
+                return v.data;
+            });
+            var tree = document.getElementById('outline-tree');
+            var treeIsEmpty = !outlineData || !outlineData.volumes || outlineData.volumes.length === 0;
+            var source = data.from_db ? '服务重启前' : '上次生成';
+            var msg = '已恢复 ' + _outlineVersions.length + ' 个大纲方案（来自' + source + '）';
+
+            if (treeIsEmpty) {
+                // 没有现有大纲，直接显示恢复的方案
+                tree.innerHTML = '<p class="muted">✅ ' + msg + '</p>' +
+                    '<button class="btn btn-sm btn-primary" style="margin-top:8px;width:100%" onclick="renderVersionCards(_outlineVersions)">📋 查看方案</button>';
+            } else {
+                // 已有大纲，在大纲树下方添加提示
+                var hint = document.createElement('div');
+                hint.style.cssText = 'margin-top:8px;padding:8px;background:rgba(124,92,252,0.08);border:1px solid var(--accent);border-radius:6px;font-size:11px;text-align:center';
+                hint.innerHTML = '💡 ' + msg + ' <button class="btn btn-sm btn-primary" onclick="renderVersionCards(_outlineVersions)" style="margin-left:8px;font-size:10px">📋 查看方案</button>';
+                tree.appendChild(hint);
+            }
+
+            _saveOutlineVersions(_outlineVersions, pid);
+            toast(msg, 'success', 5000);
+            // 清除后端状态
+            fetch('/api/v1/outline/status/' + pid, {method: 'DELETE'});
+        }
+    } catch(e) {
+        // 静默失败
+    }
+}
+
+// 记录已展示的版本数，用于增量显示
+var _shownOutlineVersionCount = 0;
+
+async function _pollOutlineStatus() {
+    if (_outlinePollTimer) { clearTimeout(_outlinePollTimer); _outlinePollTimer = null; }
+    if (!currentProjectId) return;
+
+    var tree = document.getElementById('outline-tree');
+    var btn = document.getElementById('btn-outline');
+
+    try {
+        var resp = await fetch('/api/v1/outline/status/' + currentProjectId);
+        var data = await resp.json();
+
+        if (data.status === 'not_found') {
+            btn.disabled = false; btn.textContent = '生成';
+            _shownOutlineVersionCount = 0;
+            return;
+        }
+
+        if (data.status === 'generating') {
+            var versions = data.versions || [];
+            var current = data.current || 0;
+            var total = data.total || 3;
+            var msg = data.message || '生成中...';
+
+            // 构建 HTML：进度条 + 已生成的版本卡片
+            var html = '';
+
+            // 进度条
+            html += '<div style="margin-bottom:12px">';
+            html += '<p class="muted" style="margin-bottom:6px">⏳ ' + msg + '</p>';
+            html += '<div style="width:100%;height:6px;background:var(--bg);border-radius:3px;overflow:hidden">';
+            html += '<div style="width:' + (current / total * 100) + '%;height:100%;background:var(--accent);transition:width 0.3s;border-radius:3px"></div>';
+            html += '</div>';
+            html += '<div style="font-size:10px;color:var(--text-muted);margin-top:4px;text-align:right">' + versions.length + '/' + total + ' 个方案已生成</div>';
+            html += '</div>';
+
+            // 增量显示已生成的版本卡片
+            if (versions.length > 0) {
+                html += '<div style="display:flex;flex-direction:column;gap:8px">';
+                versions.forEach(function(ver, idx) {
+                    var verData = ver.data || ver;
+                    var vols = verData.volumes || [];
+                    var totalChs = 0;
+                    vols.forEach(function(v) { totalChs += (v.chapters || []).length; });
+                    var styleTag = ver.style_tag || verData._style_tag || '';
+                    var isEmpty = vols.length === 0 || totalChs === 0;
+                    html += '<div class="version-card" style="cursor:pointer;animation:fadeIn 0.3s ease' + (isEmpty ? ';opacity:0.5' : '') + '" onclick="_previewOutlineVersion(' + idx + ')">';
+                    html += '<div style="display:flex;justify-content:space-between;align-items:center">';
+                    html += '<strong style="font-size:13px">方案 ' + (idx + 1) + '</strong>';
+                    if (styleTag) html += '<span style="font-size:10px;padding:2px 8px;background:var(--accent);color:white;border-radius:10px">' + esc(styleTag) + '</span>';
+                    html += '</div>';
+                    if (isEmpty) {
+                        html += '<div style="font-size:11px;color:var(--bad);margin-top:4px">⚠ 该方案生成失败（无有效内容）</div>';
+                    } else {
+                        html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' + vols.length + ' 卷 · ' + totalChs + ' 章</div>';
+                    }
+                    // 显示第一章标题预览
+                    if (vols.length > 0 && vols[0].chapters && vols[0].chapters.length > 0) {
+                        var firstCh = vols[0].chapters[0];
+                        html += '<div style="font-size:11px;margin-top:4px;color:var(--text)">Ch1: ' + esc(firstCh.title || '无标题') + '</div>';
+                        if (firstCh.summary) html += '<div style="font-size:10px;color:var(--text-muted);margin-top:2px">' + esc(firstCh.summary).substring(0, 60) + '...</div>';
+                    }
+                    html += '<div style="display:flex;gap:4px;margin-top:8px">';
+                    html += '<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();_applyOutlineVersion(' + idx + ')" style="font-size:10px">✅ 应用此方案</button>';
+                    html += '<button class="btn btn-sm" onclick="event.stopPropagation();_previewOutlineVersion(' + idx + ')" style="font-size:10px">👁️ 预览</button>';
+                    html += '</div>';
+                    html += '</div>';
+                });
+                html += '</div>';
+            }
+
+            tree.innerHTML = html;
+            btn.disabled = true; btn.textContent = '生成中...';
+
+            // 保存到内存供其他函数使用
+            _outlineVersions = versions.map(function(v) {
+                if (!v.data._style_tag) v.data._style_tag = v.style_tag || '';
+                return v.data;
+            });
+            _shownOutlineVersionCount = versions.length;
+
+            _outlinePollTimer = setTimeout(_pollOutlineStatus, 1500);
+            return;
+        }
+
+        if (data.status === 'done') {
+            var versions = data.versions || [];
+            _shownOutlineVersionCount = 0;
+
+            if (versions.length > 0) {
+                _outlineVersions = versions.map(function(v) {
+                    v.data._style_tag = v.style_tag || '';
+                    return v.data;
+                });
+
+                // 显示完成状态 + 所有版本卡片
+                var html = '<p class="muted" style="margin-bottom:12px">✅ 大纲生成完成，共 ' + _outlineVersions.length + ' 个方案</p>';
+                html += '<div style="display:flex;flex-direction:column;gap:8px">';
+                _outlineVersions.forEach(function(ver, idx) {
+                    var vols = ver.volumes || [];
+                    var totalChs = 0;
+                    vols.forEach(function(v) { totalChs += (v.chapters || []).length; });
+                    var styleTag = ver._style_tag || '';
+                    html += '<div class="version-card" style="cursor:pointer" onclick="_previewOutlineVersion(' + idx + ')">';
+                    html += '<div style="display:flex;justify-content:space-between;align-items:center">';
+                    html += '<strong style="font-size:13px">方案 ' + (idx + 1) + '</strong>';
+                    if (styleTag) html += '<span style="font-size:10px;padding:2px 8px;background:var(--accent);color:white;border-radius:10px">' + esc(styleTag) + '</span>';
+                    html += '</div>';
+                    html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' + vols.length + ' 卷 · ' + totalChs + ' 章</div>';
+                    if (vols.length > 0 && vols[0].chapters && vols[0].chapters.length > 0) {
+                        var firstCh = vols[0].chapters[0];
+                        html += '<div style="font-size:11px;margin-top:4px;color:var(--text)">Ch1: ' + esc(firstCh.title || '无标题') + '</div>';
+                        if (firstCh.summary) html += '<div style="font-size:10px;color:var(--text-muted);margin-top:2px">' + esc(firstCh.summary).substring(0, 60) + '...</div>';
+                    }
+                    html += '<div style="display:flex;gap:4px;margin-top:8px">';
+                    html += '<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();_applyOutlineVersion(' + idx + ')" style="font-size:10px">✅ 应用此方案</button>';
+                    html += '<button class="btn btn-sm" onclick="event.stopPropagation();_previewOutlineVersion(' + idx + ')" style="font-size:10px">👁️ 预览</button>';
+                    html += '</div>';
+                    html += '</div>';
+                });
+                html += '</div>';
+                tree.innerHTML = html;
+
+                _clearOutlineVersions(currentProjectId);
+                _saveOutlineVersions(_outlineVersions, currentProjectId);
+                _saveDraftOutlineToBackend(_outlineVersions[0]);
+                toast('大纲生成完成，共 ' + _outlineVersions.length + ' 个方案', 'success');
+            } else {
+                tree.innerHTML = '<p class="muted">未生成有效大纲</p>';
+                toast('所有版本均生成失败', 'error');
+            }
+            fetch('/api/v1/outline/status/' + currentProjectId, {method: 'DELETE'});
+            btn.disabled = false; btn.textContent = '生成';
+            return;
+        }
+
+        if (data.status === 'error') {
+            _shownOutlineVersionCount = 0;
+            tree.innerHTML = '<p class="muted">❌ ' + (data.message || '生成失败') + '</p>';
+            toast('大纲生成失败', 'error');
+            btn.disabled = false; btn.textContent = '生成';
+            return;
+        }
+    } catch(e) {
+        _outlinePollTimer = setTimeout(_pollOutlineStatus, 5000);
+    }
+}
+
+// 预览大纲版本
+function _previewOutlineVersion(idx) {
+    if (!_outlineVersions || idx >= _outlineVersions.length) return;
+    renderVersionCards(_outlineVersions);
+}
+
+// 应用大纲版本
+async function _applyOutlineVersion(idx) {
+    if (!_outlineVersions || idx >= _outlineVersions.length) return;
+    var ver = _outlineVersions[idx];
+    if (!ver || !ver.volumes || ver.volumes.length === 0) {
+        toast('该方案无有效内容，无法应用', 'error');
+        return;
+    }
+
+    try {
+        var resp = await fetch('/api/v1/projects/' + currentProjectId + '/outline/apply', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({data: ver})
+        });
+        var result = await resp.json();
+        if (result.status === 'applied') {
+            toast('已应用方案 ' + (idx + 1) + ' (' + result.volumes + '卷' + result.chapters + '章)', 'success');
+            // 清除生成状态
+            fetch('/api/v1/outline/status/' + currentProjectId, {method: 'DELETE'});
+            // 重新加载大纲
+            await loadOutline();
+        } else {
+            toast('应用失败', 'error');
+        }
+    } catch(e) {
+        toast('应用失败: ' + e.message, 'error');
+    }
+}
+
+// 保存草稿大纲到后端（不覆盖已有大纲，仅在后端没有大纲时保存）
+async function _saveDraftOutlineToBackend(outlineData) {
+    if (!currentProjectId || !outlineData || !outlineData.volumes) return;
+    try {
+        // 先检查后端是否已有大纲
+        var resp = await fetch('/api/v1/projects/' + currentProjectId + '/outline');
+        var existing = await resp.json();
+        if (existing && existing.volumes && existing.volumes.length > 0) {
+            // 后端已有大纲，不覆盖
+            return;
+        }
+        // 后端没有大纲，保存草稿
+        await fetch('/api/v1/projects/' + currentProjectId + '/outline', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(outlineData)
+        });
+    } catch(e) {
+        // 静默失败，不影响用户体验
+    }
 }
 function renderVersionCards(versions) {
     var modal = document.getElementById('outline-versions-modal');
@@ -895,49 +1156,83 @@ function renderVersionCards(versions) {
         var climaxCount = 0, hookCount = 0;
         vols.forEach(function(vol) { (vol.chapters || []).forEach(function(ch) { if (ch.is_climax) climaxCount++; if (ch.is_hook_point) hookCount++; }); });
 
-        html += '<div class="version-card" id="ver-card-' + idx + '" style="margin-bottom:16px">';
+        var isEmpty = vols.length === 0 || totalChs === 0;
+        html += '<div class="version-card" id="ver-card-' + idx + '" style="margin-bottom:20px;padding:20px' + (isEmpty ? ';opacity:0.6;border:1px dashed var(--bad)' : '') + '">';
         // 头部：方案名 + 风格标签 + 应用按钮
-        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
-        html += '<div style="display:flex;align-items:center;gap:8px"><h4 style="margin:0">方案 ' + (idx + 1) + '</h4>';
-        if (styleTag) html += '<span class="tag accent">' + escAttr(styleTag) + '</span>';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+        html += '<div style="display:flex;align-items:center;gap:12px"><h3 style="margin:0;font-size:18px">📋 方案 ' + (idx + 1) + '</h3>';
+        if (styleTag) html += '<span style="font-size:13px;padding:4px 12px;background:var(--accent);color:white;border-radius:12px;font-weight:500">' + escAttr(styleTag) + '</span>';
         html += '</div>';
-        html += '<button class="btn btn-primary btn-sm" onclick="applyOutlineVersion(' + idx + ')">✅ 应用此方案</button>';
+        if (!isEmpty) html += '<button class="btn btn-primary" onclick="applyOutlineVersion(' + idx + ')" style="font-size:14px;padding:8px 20px">✅ 应用此方案</button>';
+        else html += '<span style="font-size:13px;color:var(--bad);padding:4px 12px">⚠ 无有效内容</span>';
         html += '</div>';
 
+        if (isEmpty) {
+            html += '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:14px">该方案未生成有效大纲内容，可能是 LLM 返回格式异常。请尝试重新生成。</div>';
+        }
+
         // 统计标签
-        html += '<div class="version-meta">';
-        html += '<span class="tag">📚 ' + vols.length + '卷</span>';
-        html += '<span class="tag">📄 ' + totalChs + '章</span>';
-        html += '<span class="tag">✏️ ~' + estLabel + '</span>';
-        if (climaxCount) html += '<span class="tag" style="background:rgba(255,152,0,0.15);color:#ff9800">⚡ ' + climaxCount + '高潮</span>';
-        if (hookCount) html += '<span class="tag" style="background:rgba(76,175,80,0.15);color:#4caf50">⭐ ' + hookCount + '名场面</span>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">';
+        html += '<span style="font-size:13px;padding:4px 12px;background:var(--surface2);border-radius:6px">📚 ' + vols.length + ' 卷</span>';
+        html += '<span style="font-size:13px;padding:4px 12px;background:var(--surface2);border-radius:6px">📄 ' + totalChs + ' 章</span>';
+        html += '<span style="font-size:13px;padding:4px 12px;background:var(--surface2);border-radius:6px">✏️ ~' + estLabel + '</span>';
+        if (climaxCount) html += '<span style="font-size:13px;padding:4px 12px;background:rgba(255,152,0,0.15);color:#ff9800;border-radius:6px">⚡ ' + climaxCount + ' 高潮</span>';
+        if (hookCount) html += '<span style="font-size:13px;padding:4px 12px;background:rgba(76,175,80,0.15);color:#4caf50;border-radius:6px">⭐ ' + hookCount + ' 名场面</span>';
         html += '</div>';
 
         // 人物标签
         if (charList.length > 0) {
-            html += '<div class="version-meta">';
-            charList.forEach(function(c) { html += '<span class="tag">👤 ' + escAttr(c) + '</span>'; });
+            html += '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">';
+            charList.forEach(function(c) { html += '<span style="font-size:13px;padding:4px 12px;background:rgba(33,150,243,0.1);color:#2196f3;border-radius:6px">👤 ' + escAttr(c) + '</span>'; });
             html += '</div>';
         }
 
-        // 卷摘要
-        vols.forEach(function(vol) {
-            html += '<div class="vol-info" style="margin-top:6px">📘 第' + vol.volume_number + '卷: <strong>' + escAttr(vol.title || '未命名') + '</strong> <span style="color:var(--text-muted)">(' + (vol.chapters || []).length + '章)</span></div>';
-            if (vol.arc_description) html += '<div class="vol-info" style="padding-left:12px;font-size:11px;color:var(--text-muted);line-height:1.5">' + escAttr(vol.arc_description).substring(0, 120) + (vol.arc_description.length > 120 ? '...' : '') + '</div>';
+        // 卷摘要（可折叠）
+        vols.forEach(function(vol, vi) {
+            var descId = 'vol-desc-' + idx + '-' + vi;
+            var fullDesc = escAttr(vol.arc_description || '');
+            var shortDesc = fullDesc.substring(0, 120);
+            var needExpand = fullDesc.length > 120;
+
+            html += '<div style="margin-top:10px">';
+            html += '<div style="font-size:15px;font-weight:600;color:var(--accent)">📘 第' + vol.volume_number + '卷: ' + escAttr(vol.title || '未命名') + ' <span style="color:var(--text-muted);font-weight:400;font-size:13px">(' + (vol.chapters || []).length + '章)</span></div>';
+            if (vol.arc_description) {
+                html += '<div style="padding-left:16px;font-size:14px;color:var(--text-muted);line-height:1.7;margin-top:4px">';
+                html += '<span id="' + descId + '-short">' + shortDesc + (needExpand ? '...' : '') + '</span>';
+                if (needExpand) {
+                    html += '<span id="' + descId + '-full" style="display:none">' + fullDesc + '</span>';
+                    html += ' <a href="javascript:void(0)" onclick="toggleVolDesc(\'' + descId + '\')" id="' + descId + '-btn" style="color:var(--accent);font-size:12px;white-space:nowrap">展开全部</a>';
+                }
+                html += '</div>';
+            }
+            html += '</div>';
         });
 
         // 展开/折叠章节详情
-        html += '<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">';
-        html += '<button class="version-expand-btn" onclick="toggleVersionDetail(' + idx + ')" style="font-size:12px;padding:4px 8px">▶ 查看章节详情</button>';
+        html += '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">';
+        html += '<button class="version-expand-btn" onclick="toggleVersionDetail(' + idx + ')" style="font-size:14px;padding:6px 12px">▶ 查看章节详情</button>';
         html += '<div class="version-detail" id="ver-detail-' + idx + '">';
-        vols.forEach(function(vol) {
-            html += '<div style="font-size:12px;font-weight:600;margin:8px 0 4px;color:var(--accent)">📘 第' + vol.volume_number + '卷: ' + escAttr(vol.title || '') + '</div>';
-            (vol.chapters || []).forEach(function(ch) {
+        vols.forEach(function(vol, vi) {
+            html += '<div style="font-size:15px;font-weight:600;margin:12px 0 6px;color:var(--accent)">📘 第' + vol.volume_number + '卷: ' + escAttr(vol.title || '') + '</div>';
+            (vol.chapters || []).forEach(function(ch, ci) {
                 var marks = '';
                 if (ch.is_climax) marks += '<span style="color:#ff9800">⚡</span>';
                 if (ch.is_hook_point) marks += '<span style="color:#4caf50">⭐</span>';
-                html += '<div class="ch-row"><span class="ch-num" style="min-width:40px">Ch' + ch.chapter_number + '</span><span class="ch-title">' + marks + ' ' + escAttr(ch.title || '') + '</span></div>';
-                if (ch.summary) html += '<div class="ch-row"><span class="ch-num" style="min-width:40px"></span><span class="ch-title" style="color:var(--text-muted);font-size:10px;line-height:1.4">' + escAttr(ch.summary).substring(0, 80) + '</span></div>';
+                var summaryId = 'ch-summary-' + idx + '-' + vi + '-' + ci;
+                var fullSummary = escAttr(ch.summary || '');
+                var shortSummary = fullSummary.substring(0, 80);
+                var needSummaryExpand = fullSummary.length > 80;
+
+                html += '<div style="display:flex;gap:8px;padding:6px 0;font-size:14px"><span style="color:var(--text-muted);min-width:50px">Ch' + ch.chapter_number + '</span><span style="flex:1;line-height:1.5">' + marks + ' ' + escAttr(ch.title || '') + '</span></div>';
+                if (ch.summary) {
+                    html += '<div style="display:flex;gap:8px;padding:2px 0 6px 58px;font-size:13px;color:var(--text-muted);line-height:1.6">';
+                    html += '<span id="' + summaryId + '-short" style="flex:1">' + shortSummary + (needSummaryExpand ? '...' : '') + '</span>';
+                    if (needSummaryExpand) {
+                        html += '<span id="' + summaryId + '-full" style="display:none;flex:1">' + fullSummary + '</span>';
+                        html += ' <a href="javascript:void(0)" onclick="toggleChSummary(\'' + summaryId + '\')" id="' + summaryId + '-btn" style="color:var(--accent);font-size:11px;white-space:nowrap">展开</a>';
+                    }
+                    html += '</div>';
+                }
             });
         });
         html += '</div></div>';
@@ -956,8 +1251,39 @@ function toggleVersionDetail(idx) {
     if (el.classList.contains('open')) { el.classList.remove('open'); btn.textContent = '▶ 查看章节详情'; }
     else { el.classList.add('open'); btn.textContent = '▼ 收起章节详情'; }
 }
+function toggleVolDesc(descId) {
+    var shortEl = document.getElementById(descId + '-short');
+    var fullEl = document.getElementById(descId + '-full');
+    var btnEl = document.getElementById(descId + '-btn');
+    if (!shortEl || !fullEl || !btnEl) return;
+    if (fullEl.style.display === 'none') {
+        shortEl.style.display = 'none';
+        fullEl.style.display = 'inline';
+        btnEl.textContent = '收起';
+    } else {
+        shortEl.style.display = 'inline';
+        fullEl.style.display = 'none';
+        btnEl.textContent = '展开全部';
+    }
+}
+function toggleChSummary(summaryId) {
+    var shortEl = document.getElementById(summaryId + '-short');
+    var fullEl = document.getElementById(summaryId + '-full');
+    var btnEl = document.getElementById(summaryId + '-btn');
+    if (!shortEl || !fullEl || !btnEl) return;
+    if (fullEl.style.display === 'none') {
+        shortEl.style.display = 'none';
+        fullEl.style.display = 'inline';
+        btnEl.textContent = '收起';
+    } else {
+        shortEl.style.display = 'inline';
+        fullEl.style.display = 'none';
+        btnEl.textContent = '展开';
+    }
+}
 async function applyOutlineVersion(idx) {
-    var data = _outlineVersions[idx]; if (!data) return;
+    var data = _outlineVersions[idx];
+    if (!data || !data.volumes || data.volumes.length === 0) { toast('该方案无有效内容，无法应用', 'error'); return; }
     try {
         var resp = await fetch('/api/v1/projects/' + currentProjectId + '/outline/apply', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({data: data})});
         var result = await resp.json();
@@ -1206,4 +1532,302 @@ async function buildGraph() {
         toast('图谱已构建: ' + (d.nodes_added || 0) + '节点 ' + (d.edges_added || 0) + '边', 'success');
         loadMiniGraph();
     } catch(e) { toast('图谱构建失败', 'error'); }
+}
+
+// ===== 章节版本历史 =====
+var _chVersions = [];
+var _chDiffMode = false;
+var _chDiffSelected = [];
+
+var _chCurrentVersionId = null;
+
+async function showChapterVersions() {
+    if (!currentProjectId || !currentChapterNum) return;
+    document.getElementById('ch-version-title').textContent = '第' + currentVolumeNum + '卷第' + currentChapterNum + '章';
+    document.getElementById('ch-version-modal').style.display = 'flex';
+    document.getElementById('ch-version-list').innerHTML = '<p class="muted" style="text-align:center;padding:20px">加载中...</p>';
+    document.getElementById('ch-version-preview').innerHTML = '<p class="muted" style="text-align:center;padding:40px">选择一个版本查看内容</p>';
+    _chDiffMode = false;
+    _chDiffSelected = [];
+    try {
+        var resp = await fetch('/api/v1/projects/' + currentProjectId + '/chapters/' + currentChapterNum + '/versions?volume=' + currentVolumeNum);
+        var data = await resp.json();
+        _chVersions = data.versions || [];
+        _chCurrentVersionId = data.current_version_id || null;
+        document.getElementById('ch-version-stats').textContent = '共 ' + _chVersions.length + ' 个历史版本';
+        renderChVersionList();
+    } catch(e) {
+        document.getElementById('ch-version-list').innerHTML = '<p class="muted" style="color:var(--bad)">加载失败</p>';
+    }
+}
+
+function renderChVersionList() {
+    var html = '<div style="margin-bottom:8px;display:flex;gap:4px">' +
+        '<button class="btn btn-sm" onclick="chVersionToggleDiff()" id="btn-ch-diff" style="font-size:10px">⚖️ 对比模式</button>' +
+        '</div>';
+    if (_chVersions.length === 0) {
+        html += '<p class="muted" style="text-align:center;padding:20px">暂无历史版本</p>';
+    }
+    _chVersions.forEach(function(v, i) {
+        var src = v.source || 'manual';
+        var srcLabel = {manual:'手动保存', generate:'AI生成', optimize:'优化', rollback:'回滚', pre_rollback:'回滚前'}[src] || src;
+        var srcColor = {generate:'var(--accent)', optimize:'var(--ok)', rollback:'var(--warn)', pre_rollback:'var(--text-muted)'}[src] || 'var(--text-muted)';
+        var selected = _chDiffSelected.indexOf(v.id) >= 0;
+        var isCurrent = _chCurrentVersionId && v.id === _chCurrentVersionId;
+        html += '<div class="version-card' + (selected ? ' selected' : '') + '" style="' + (selected ? 'border-color:var(--accent);background:rgba(124,92,252,0.05)' : '') + (isCurrent ? 'border:2px solid var(--ok);' : '') + '" onclick="loadChVersion(' + v.id + ',' + i + ')">';
+        html += '<h4><span>v' + v.id + '</span>';
+        if (isCurrent) html += '<span style="font-size:10px;background:var(--ok);color:#fff;padding:1px 6px;border-radius:8px;margin-left:6px">当前使用</span>';
+        html += '<span style="font-size:10px;color:var(--text-muted)">' + (v.word_count || 0) + '字</span></h4>';
+        html += '<div class="vol-info">' + (v.created_at || '') + '</div>';
+        html += '<div class="version-meta"><span class="tag" style="color:' + srcColor + '">' + srcLabel + '</span>';
+        if (v.change_summary) html += '<span class="tag accent">' + esc(v.change_summary).substring(0, 30) + '</span>';
+        html += '</div>';
+        if (_chDiffMode) {
+            html += '<div style="margin-top:6px"><label style="font-size:10px;cursor:pointer"><input type="checkbox" ' + (selected ? 'checked' : '') + ' onclick="event.stopPropagation();chVersionToggleSelect(' + v.id + ')" style="margin-right:4px">选择对比</label></div>';
+        }
+        html += '</div>';
+    });
+    document.getElementById('ch-version-list').innerHTML = html;
+}
+
+async function loadChVersion(versionId, idx) {
+    if (_chDiffMode) {
+        chVersionToggleSelect(versionId);
+        return;
+    }
+    var preview = document.getElementById('ch-version-preview');
+    preview.innerHTML = '<p class="muted" style="text-align:center;padding:20px">加载中...</p>';
+    try {
+        var resp = await fetch('/api/v1/versions/chapter/' + versionId);
+        var data = await resp.json();
+        var content = data.content || '';
+        var html = '<div style="margin-bottom:12px;padding:8px;background:var(--surface2);border-radius:6px;font-size:12px">';
+        html += '<strong>版本 #' + versionId + '</strong>';
+        html += ' · ' + (data.word_count || content.length) + '字';
+        html += ' · ' + (data.created_at || '');
+        html += ' · <span style="color:var(--accent)">' + (data.source || '') + '</span>';
+        if (data.change_summary) html += '<br><span style="color:var(--text-muted)">' + esc(data.change_summary) + '</span>';
+        html += '</div>';
+        html += '<div style="white-space:pre-wrap;font-size:13px;line-height:1.8;background:var(--bg);padding:12px;border-radius:6px;max-height:calc(80vh - 200px);overflow-y:auto">' + esc(content) + '</div>';
+        html += '<div style="margin-top:8px;display:flex;gap:8px">';
+        var isCurrent = _chCurrentVersionId && versionId === _chCurrentVersionId;
+        if (!isCurrent) html += '<button class="btn btn-primary btn-sm" onclick="rollbackChVersion(' + versionId + ')">🔄 回滚到此版本</button>';
+        else html += '<span style="font-size:12px;color:var(--ok);padding:4px 0">✓ 这是当前使用的版本</span>';
+        html += '<button class="btn btn-sm" style="color:var(--bad)" onclick="deleteChVersion(' + versionId + ')">🗑️ 删除</button>';
+        html += '</div>';
+        preview.innerHTML = html;
+    } catch(e) {
+        preview.innerHTML = '<p class="muted" style="color:var(--bad)">加载失败</p>';
+    }
+}
+
+function chVersionToggleDiff() {
+    _chDiffMode = !_chDiffMode;
+    _chDiffSelected = [];
+    var btn = document.getElementById('btn-ch-diff');
+    if (btn) btn.className = _chDiffMode ? 'btn btn-sm btn-primary' : 'btn btn-sm';
+    renderChVersionList();
+    if (!_chDiffMode) {
+        document.getElementById('ch-version-preview').innerHTML = '<p class="muted" style="text-align:center;padding:40px">选择一个版本查看内容</p>';
+    }
+}
+
+function chVersionToggleSelect(versionId) {
+    var idx = _chDiffSelected.indexOf(versionId);
+    if (idx >= 0) {
+        _chDiffSelected.splice(idx, 1);
+    } else {
+        if (_chDiffSelected.length >= 2) _chDiffSelected.shift();
+        _chDiffSelected.push(versionId);
+    }
+    renderChVersionList();
+    if (_chDiffSelected.length === 2) {
+        loadChVersionDiff(_chDiffSelected[0], _chDiffSelected[1]);
+    }
+}
+
+async function loadChVersionDiff(v1, v2) {
+    var preview = document.getElementById('ch-version-preview');
+    preview.innerHTML = '<p class="muted" style="text-align:center;padding:20px">对比中...</p>';
+    try {
+        var resp = await fetch('/api/v1/versions/chapter/' + v1 + '/diff/' + v2);
+        var data = await resp.json();
+        var items = data.diff_items || [];
+        var stats = data.stats || {};
+        var html = '<div style="margin-bottom:8px;padding:6px 10px;background:var(--surface2);border-radius:6px;font-size:11px">';
+        html += '版本 #' + v1 + ' vs #' + v2;
+        html += ' · <span style="color:var(--ok)">+' + (stats.added || 0) + '</span>';
+        html += ' · <span style="color:var(--bad)">-' + (stats.removed || 0) + '</span>';
+        html += ' · <span style="color:var(--text-muted)">' + (stats.unchanged || 0) + ' 不变</span>';
+        html += '</div>';
+        html += '<div style="background:var(--bg);padding:12px;border-radius:6px;max-height:calc(80vh - 200px);overflow-y:auto;font-size:13px;line-height:1.8;font-family:monospace">';
+        items.forEach(function(item) {
+            if (item.type === 'equal') {
+                html += '<div style="color:var(--text-muted);padding:2px 0">' + esc(item.text) + '</div>';
+            } else if (item.type === 'add') {
+                html += '<div style="color:var(--ok);background:rgba(76,175,80,0.1);padding:2px 4px;border-left:3px solid var(--ok)">+ ' + esc(item.text) + '</div>';
+            } else if (item.type === 'del') {
+                html += '<div style="color:var(--bad);background:rgba(244,67,54,0.1);padding:2px 4px;border-left:3px solid var(--bad)">- ' + esc(item.text) + '</div>';
+            }
+        });
+        html += '</div>';
+        preview.innerHTML = html;
+    } catch(e) {
+        preview.innerHTML = '<p class="muted" style="color:var(--bad)">对比失败</p>';
+    }
+}
+
+async function rollbackChVersion(versionId) {
+    if (!confirm('确定要回滚到版本 #' + versionId + ' 吗？当前内容会先自动保存为历史版本。')) return;
+    try {
+        var resp = await fetch('/api/v1/projects/' + currentProjectId + '/chapters/' + currentChapterNum + '/versions/' + versionId + '/rollback?volume=' + currentVolumeNum, {method: 'POST'});
+        var data = await resp.json();
+        if (data.status === 'rolled_back') {
+            toast('已回滚到版本 #' + versionId + '，' + (data.word_count || 0) + '字', 'success');
+            // 重新加载章节内容
+            if (typeof loadChapter === 'function') loadChapter(currentChapterNum, currentVolumeNum);
+            // 刷新版本列表（更新当前版本标识）
+            showChapterVersions();
+        } else {
+            toast('回滚失败', 'error');
+        }
+    } catch(e) {
+        toast('回滚失败: ' + e.message, 'error');
+    }
+}
+
+async function deleteChVersion(versionId) {
+    if (!confirm('确定要删除版本 #' + versionId + ' 吗？此操作不可恢复。')) return;
+    try {
+        var resp = await fetch('/api/v1/projects/' + currentProjectId + '/chapters/' + currentChapterNum + '/versions/' + versionId, {method: 'DELETE'});
+        var data = await resp.json();
+        if (data.status === 'deleted') {
+            toast('版本 #' + versionId + ' 已删除', 'success');
+            // 刷新列表和预览
+            showChapterVersions();
+        } else {
+            toast('删除失败', 'error');
+        }
+    } catch(e) {
+        toast('删除失败: ' + e.message, 'error');
+    }
+}
+
+function closeChVersionModal() {
+    document.getElementById('ch-version-modal').style.display = 'none';
+    _chDiffMode = false;
+    _chDiffSelected = [];
+}
+
+// ===== 大纲版本历史 =====
+var _olVersionList = [];
+var _olCurrentVersionId = null;
+
+async function showOutlineVersions() {
+    if (!currentProjectId) return;
+    document.getElementById('ol-version-modal').style.display = 'flex';
+    document.getElementById('ol-version-list').innerHTML = '<p class="muted" style="text-align:center;padding:20px">加载中...</p>';
+    try {
+        var resp = await fetch('/api/v1/projects/' + currentProjectId + '/outline/versions');
+        var data = await resp.json();
+        _olVersionList = data.versions || [];
+        _olCurrentVersionId = data.current_version_id || null;
+        document.getElementById('ol-version-count').textContent = '共 ' + _olVersionList.length + ' 个历史版本';
+        renderOlVersionList();
+    } catch(e) {
+        document.getElementById('ol-version-list').innerHTML = '<p class="muted" style="color:var(--bad)">加载失败</p>';
+    }
+}
+
+function renderOlVersionList() {
+    var html = '';
+    if (_olVersionList.length === 0) {
+        html += '<p class="muted" style="text-align:center;padding:20px">暂无历史版本</p>';
+    }
+    _olVersionList.forEach(function(v) {
+        var src = v.source || 'manual';
+        var srcLabel = {manual:'手动保存', generate:'生成', pre_generate:'生成前', apply:'应用方案', pre_apply:'应用前', rollback:'回滚', pre_rollback:'回滚前'}[src] || src;
+        var isCurrent = _olCurrentVersionId && v.id === _olCurrentVersionId;
+        html += '<div class="version-card" style="' + (isCurrent ? 'border:2px solid var(--ok);' : '') + '">';
+        html += '<h4><span>v' + v.id + '</span>';
+        if (isCurrent) html += '<span style="font-size:10px;background:var(--ok);color:#fff;padding:1px 6px;border-radius:8px;margin-left:6px">当前使用</span>';
+        html += '<span style="font-size:10px;color:var(--text-muted)">' + (v.volumes_count || 0) + '卷/' + (v.chapters_count || 0) + '章</span></h4>';
+        html += '<div class="vol-info">' + (v.created_at || '') + '</div>';
+        html += '<div class="version-meta"><span class="tag">' + srcLabel + '</span>';
+        if (v.change_summary) html += '<span class="tag accent">' + esc(v.change_summary).substring(0, 40) + '</span>';
+        html += '</div>';
+        html += '<div style="margin-top:8px;display:flex;gap:6px">';
+        html += '<button class="btn btn-sm" onclick="previewOlVersion(' + v.id + ')">👁️ 预览</button>';
+        if (!isCurrent) html += '<button class="btn btn-primary btn-sm" onclick="rollbackOlVersion(' + v.id + ')">🔄 回滚</button>';
+        html += '<button class="btn btn-sm" style="color:var(--bad)" onclick="deleteOlVersion(' + v.id + ')">🗑️ 删除</button>';
+        html += '</div>';
+        html += '</div>';
+    });
+    document.getElementById('ol-version-list').innerHTML = html;
+}
+
+async function previewOlVersion(versionId) {
+    try {
+        var resp = await fetch('/api/v1/versions/outline/' + versionId);
+        var data = await resp.json();
+        var outline = data.outline_data || {};
+        var volumes = outline.volumes || [];
+        var html = '<div style="padding:8px;background:var(--bg);border-radius:6px;max-height:300px;overflow-y:auto;font-size:12px">';
+        volumes.forEach(function(vol) {
+            html += '<div style="margin-bottom:8px"><strong>第' + (vol.volume_number || '?') + '卷: ' + esc(vol.title || '无标题') + '</strong>';
+            if (vol.arc_description) html += '<div style="color:var(--text-muted);font-size:11px;margin-top:2px">' + esc(vol.arc_description).substring(0, 100) + '</div>';
+            html += '</div>';
+            (vol.chapters || []).forEach(function(ch) {
+                html += '<div style="padding:2px 0 2px 12px;font-size:11px;border-left:2px solid var(--border);margin-left:4px">';
+                html += '<span style="color:var(--text-muted)">Ch' + (ch.chapter_number || '?') + '</span> ';
+                html += esc(ch.title || '无标题');
+                if (ch.summary) html += '<span style="color:var(--text-muted)"> — ' + esc(ch.summary).substring(0, 50) + '</span>';
+                html += '</div>';
+            });
+        });
+        html += '</div>';
+        _modal({icon: '👁️', title: '大纲版本 #' + versionId + ' 预览', body: html, okText: '关闭', cancelText: false, onOk: null});
+    } catch(e) {
+        toast('预览失败', 'error');
+    }
+}
+
+async function rollbackOlVersion(versionId) {
+    if (!confirm('确定要回滚大纲到版本 #' + versionId + ' 吗？当前大纲会先自动保存为历史版本。')) return;
+    try {
+        var resp = await fetch('/api/v1/projects/' + currentProjectId + '/outline/versions/' + versionId + '/rollback', {method: 'POST'});
+        var data = await resp.json();
+        if (data.status === 'rolled_back') {
+            toast('大纲已回滚到版本 #' + versionId, 'success');
+            // 重新加载大纲
+            if (typeof loadOutline === 'function') loadOutline();
+            // 刷新版本列表（更新当前版本标识）
+            showOutlineVersions();
+        } else {
+            toast('回滚失败', 'error');
+        }
+    } catch(e) {
+        toast('回滚失败: ' + e.message, 'error');
+    }
+}
+
+async function deleteOlVersion(versionId) {
+    if (!confirm('确定要删除版本 #' + versionId + ' 吗？此操作不可恢复。')) return;
+    try {
+        var resp = await fetch('/api/v1/projects/' + currentProjectId + '/outline/versions/' + versionId, {method: 'DELETE'});
+        var data = await resp.json();
+        if (data.status === 'deleted') {
+            toast('版本 #' + versionId + ' 已删除', 'success');
+            // 刷新列表
+            showOutlineVersions();
+        } else {
+            toast('删除失败', 'error');
+        }
+    } catch(e) {
+        toast('删除失败: ' + e.message, 'error');
+    }
+}
+
+function closeOlVersionModal() {
+    document.getElementById('ol-version-modal').style.display = 'none';
 }

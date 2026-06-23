@@ -58,6 +58,43 @@ async def generate_illustration(data: IllustrateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/cover/prompt")
+async def generate_cover_prompt(data: dict):
+    """生成封面绘图提示词（文本，不生成图片）.
+
+    body: {title: str, style: str = "", one_liner: str = ""}
+    """
+    title = data.get("title", "")
+    style = data.get("style", "")
+    one_liner = data.get("one_liner", "")
+
+    if not title:
+        return {"error": "需要 title"}
+
+    # 构建英文专业提示词
+    style_map = {
+        "realistic": "photorealistic, cinematic lighting, detailed textures, 8k resolution",
+        "anime": "anime style, cel-shaded, vibrant colors, manga illustration",
+        "ink": "Chinese ink wash painting, traditional brush strokes, minimalist, elegant",
+        "dark": "dark fantasy, gothic atmosphere, dramatic shadows, moody lighting",
+    }
+    style_desc = style_map.get(style, "professional book cover art, high quality illustration")
+
+    prompt_parts = [
+        f"Book cover design for a novel titled \"{title}\"",
+        f"Style: {style_desc}",
+    ]
+    if one_liner:
+        prompt_parts.append(f"Theme: {one_liner}")
+    prompt_parts.extend([
+        "Professional publishing quality, vertical portrait orientation (2:3 ratio)",
+        "Typography space预留 at top and bottom for title and author name",
+        "No text or watermarks in the image",
+    ])
+
+    return {"prompt": "\n".join(prompt_parts)}
+
+
 @router.get("/{project_id}/cover")
 async def get_cover_image(project_id: str):
     """获取项目封面图片."""

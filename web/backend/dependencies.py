@@ -102,8 +102,10 @@ class AppState:
             "plugins.consistency_checker.plugin",
             "plugins.foreshadow_manager.plugin",
             "plugins.anti_ai_detection.plugin",
+            "plugins.quality_evaluator.plugin",
             "plugins.graph_manager.plugin",
             "plugins.writing_coach.plugin",
+            "plugins.pipeline_editor.plugin",
             "plugins.cover_artist.plugin",
             "plugins.pack_market.plugin",
         ]

@@ -37,9 +37,19 @@ async def build_skill(data: SkillBuildRequest):
 
 @router.post("/delete", response_model=dict)
 async def delete_skill(data: dict):
-    """删除 AI 生成的插件。"""
+    """删除 AI 生成的插件（POST 方式）."""
+    return await _delete_skill_impl(data.get("name", ""))
+
+
+@router.delete("/built/{name}", response_model=dict)
+async def delete_skill_by_path(name: str):
+    """删除 AI 生成的插件（DELETE 方式，匹配前端调用）."""
+    return await _delete_skill_impl(name)
+
+
+async def _delete_skill_impl(name: str) -> dict:
+    """删除插件的内部实现."""
     kernel = await get_kernel()
-    name = data.get("name", "")
     if not name:
         raise HTTPException(status_code=400, detail="缺少插件名")
     import shutil

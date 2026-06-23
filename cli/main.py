@@ -624,9 +624,16 @@ async def cmd_graph(args):
         error("图谱管理器未加载。请确保 graph-manager 插件已激活")
         return
 
+    if not gm or not gm.instance or not gm.instance._query or not gm.instance._store:
+        error("图谱存储未初始化")
+        return
+
+    query = gm.instance._query
+    store = gm.instance._store
+
     if args.action == "export":
         header("知识图谱 — 全图导出")
-        data = await gm.instance.export_graph()
+        data = await query.export_full_graph()
         print(f"\n  节点: {len(data.get('nodes', []))} 个")
         for n in data.get("nodes", [])[:15]:
             print(f"    [{n.get('group', '?')}] {n.get('label', n.get('id', '?'))}")
@@ -636,7 +643,7 @@ async def cmd_graph(args):
 
     elif args.action == "network" and args.char:
         header(f"人物关系网 — {args.char}")
-        data = await gm.instance.query_character_network(args.char)
+        data = await query.character_network(args.char)
         print(f"  节点: {len(data.get('nodes', []))}")
         print(f"  边: {len(data.get('edges', []))}")
         for e in data.get("edges", []):
@@ -644,7 +651,7 @@ async def cmd_graph(args):
 
     elif args.action == "characters":
         header("图谱人物列表")
-        chars = await gm.instance.query_all_characters()
+        chars = await query.all_characters()
         for c in chars:
             print(f"    {c.get('name', c.get('id', '?'))} — {c.get('relation_count', 0)} 条关系 [{c.get('status', '?')}]")
 
@@ -654,7 +661,7 @@ async def cmd_graph(args):
         success(f"节点: +{result.get('nodes_added', 0)}, 边: +{result.get('edges_added', 0)}")
 
     elif args.action == "clear":
-        await gm.instance.clear_graph()
+        await store.clear()
         success("图谱已清空")
 
     else:

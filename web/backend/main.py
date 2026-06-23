@@ -28,6 +28,49 @@ from web.backend.routes import admin, export_coach, generation, graph, images, m
 # =============================================================================
 
 
+async def _handle_interrupted_outline_jobs(state):
+    """服务器启动时处理中断的大纲生成任务."""
+    try:
+        if not state.database:
+            return
+        interrupted = await state.database.get_interrupted_outline_jobs()
+        if not interrupted:
+            return
+
+        from core.logging_config import get_logger
+        logger = get_logger(__name__)
+
+        for job in interrupted:
+            pid = job["project_id"]
+            versions = job.get("versions", [])
+            current = job.get("current", 0)
+            total = job.get("total", 3)
+
+            if versions:
+                # 有已完成的版本，标记为 done（部分完成）
+                await state.database.save_outline_job(
+                    pid, "done", total, current, versions,
+                    f"服务重启，已恢复 {len(versions)} 个版本（原计划 {total} 个）",
+                )
+                logger.info(
+                    "恢复中断的大纲生成任务",
+                    project_id=pid,
+                    recovered_versions=len(versions),
+                    planned=total,
+                )
+            else:
+                # 没有已完成的版本，标记为 error
+                await state.database.save_outline_job(
+                    pid, "error", total, current, [],
+                    "服务重启，生成中断，无已完成版本",
+                )
+                logger.info("标记中断的大纲生成任务为失败", project_id=pid)
+    except Exception as e:
+        from core.logging_config import get_logger
+        logger = get_logger(__name__)
+        logger.error("处理中断大纲任务失败", error=str(e))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI 生命周期管理."""
@@ -41,6 +84,10 @@ async def lifespan(app: FastAPI):
     # 启动
     setup_logging(level="DEBUG", json_output=False)
     state = await get_app_state()
+
+    # 处理中断的大纲生成任务
+    await _handle_interrupted_outline_jobs(state)
+
     print(f"\n{'='*60}")
     print(f"  AI 小说生成智能体 v0.3.0")
     print(f"  插件: {len(await state.plugin_manager.list_active())} 个已激活")
@@ -86,9 +133,22 @@ app.include_router(packs.router)
 app.include_router(workbench.router)
 app.include_router(admin.router)
 
-# 静态文件
+# 静态文件（开发模式禁用缓存）
 static_dir = Path(__file__).parent.parent / "frontend" / "static"
 if static_dir.exists():
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import Response
+
+    class NoCacheMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            response = await call_next(request)
+            if request.url.path.startswith("/static/"):
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+            return response
+
+    app.add_middleware(NoCacheMiddleware)
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 # Jinja2 模板 (直接使用 Environment, 兼容 Python 3.14)
@@ -156,6 +216,10 @@ async def graph_viz_page(request: Request):
 @app.get("/coach", response_class=HTMLResponse)
 async def coach_page(request: Request):
     return HTMLResponse(_render_template("coach.html", request))
+
+@app.get("/pipeline-editor", response_class=HTMLResponse)
+async def pipeline_editor_page(request: Request):
+    return HTMLResponse(_render_template("pipeline_editor.html", request))
 
 @app.get("/stats", response_class=HTMLResponse)
 async def stats_page(request: Request):

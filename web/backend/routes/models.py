@@ -54,6 +54,13 @@ async def list_all_models():
     if not registry:
         return {"providers": [], "tiers": {}, "message": "模型注册中心未初始化"}
 
+    # 从配置中读取 models 列表（作为 fallback）
+    config_models: dict[str, list[str]] = {}
+    for pc in (kernel._config_manager.get_all().get("providers", []) if kernel._config_manager else []):
+        pc_name = pc.get("name", "")
+        if pc_name:
+            config_models[pc_name] = pc.get("models", [])
+
     # 从 registry + 数据库读取 Provider
     seen = set()
     providers = []
@@ -71,11 +78,15 @@ async def list_all_models():
             for dp in await kernel.db.list_providers_db():
                 if dp["name"] == name:
                     db_info = dp; break
+        # 合并 models：数据库 + 配置文件（去重）
+        db_models = db_info.get("models", [])
+        cfg_models = config_models.get(name, [])
+        merged_models = list(dict.fromkeys(db_models + cfg_models))
         providers.append({
             "name": name, "type": db_info.get("type", rp.get("type","")),
             "base_url": db_info.get("base_url", ""),
             "default_model": db_info.get("default_model", rp.get("default_model","")),
-            "models": db_info.get("models", []),
+            "models": merged_models,
             "healthy": healthy, "error": error_msg, "registered": True, "from_db": bool(db_info),
         })
 
@@ -265,6 +276,18 @@ async def update_provider(provider_name: str, request: Request):
     if not new_default_model:
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="默认模型为必填")
 
+    # 更新 models 列表：确保新 default_model 在列表中
+    existing_models = existing_config.get("models", [])
+    if isinstance(existing_models, str):
+        import json as _json
+        try:
+            existing_models = _json.loads(existing_models)
+        except Exception:
+            existing_models = []
+    new_models = list(existing_models)
+    if new_default_model and new_default_model not in new_models:
+        new_models.append(new_default_model)
+
     # 重新创建适配器
     try:
         from core.llm.openai_compatible_adapter import OpenAICompatibleAdapter
@@ -283,12 +306,14 @@ async def update_provider(provider_name: str, request: Request):
             await kernel.db.save_provider(
                 provider_name, "openai_compatible",
                 new_base_url, new_api_key, new_default_model,
-                existing_config.get("models", [])
+                new_models,
             )
 
         return {
             "status": "ok",
             "message": f"Provider '{provider_name}' 已更新",
+            "default_model": new_default_model,
+            "models": new_models,
         }
     except Exception as exc:
         raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)[:200])

@@ -1,70 +1,64 @@
 genres:
-  - name: 赛博修仙
-    platform: qidian
-    audience: 18-35岁男性为主，泛二次元及科幻爱好者
-    heat: ★★★★★
-    description: 将传统修仙体系与赛博朋克、AI、虚拟现实等元素融合，强调科技与灵力的冲突与共生。2026年成为起点头部增长最快子类，多部作品进入畅销榜Top50。
-    keywords: [赛博朋克, 修仙, AI觉醒, 虚拟世界, 灵能科技]
-    competition: 高
-    new_author_friendly: false
-    updated: "2026-06-19"
-
-  - name: 女频无限流+情感成长
-    platform: jinjiang
-    audience: 16-30岁女性，偏好强女主与细腻情感线
-    heat: ★★★★★
-    description: 在无限流框架下强化角色心理成长与亲密关系描写，副本设定更贴近现实焦虑（如职场、家庭、社交），情感线占比提升至40%以上。
-    keywords: [无限流, 女强, 情感成长, 心理疗愈, 多世界]
-    competition: 中高
-    new_author_friendly: true
-    updated: "2026-06-19"
-
-  - name: 轻量化系统文（快穿/任务流）
+  - name: 极速短剧爽文
     platform: fanqie
-    audience: 15-25岁泛用户，偏好短平快节奏
-    heat: ★★★★☆
-    description: 单章2000字以内，每3-5章完成一个任务单元，系统提示高度游戏化，适配短视频引流与碎片阅读。番茄小说该类目日活增长达120%（同比2025）。
-    keywords: [系统, 快穿, 任务流, 轻小说, 爽文]
+    audience: 下沉市场男性/短剧受众
+    heat: ★★★★★
+    description: 专为短剧改编定制的超快节奏网文，三章一爽点，十章一反转，抛弃长线铺垫，主打情绪拉扯与即时反馈，直接对接下游影视化需求。
+    keywords: [短剧向, 极速爽, 战神归来, 逆袭, 打脸]
     competition: 极高
     new_author_friendly: true
     updated: "2026-06-19"
-
-  - name: 末世基建+群像经营
-    platform: qidian
-    audience: 22-40岁男性，偏好策略与长期发展叙事
-    heat: ★★★★☆
-    description: 后末世背景下聚焦资源管理、社区重建与势力博弈，弱化个人英雄主义，强调集体协作与制度构建。2026年Q2新书留存率同比提升35%。
-    keywords: [末世, 基建, 群像, 经营模拟, 生存策略]
-    competition: 中
-    new_author_friendly: false
-    updated: "2026-06-19"
-
-  - name: 古风悬疑+非遗元素
-    platform: jinjiang
-    audience: 18-35岁女性，文化兴趣浓厚群体
-    heat: ★★★★
-    description: 结合传统工艺（如缂丝、漆器、古琴）与悬疑探案，强调历史考据与美学表达。晋江2026年“国风计划”重点扶持赛道，签约率提升50%。
-    keywords: [古风, 悬疑, 非遗, 探案, 文化传承]
-    competition: 中低
-    new_author_friendly: true
-    updated: "2026-06-19"
-
-  - name: 都市异能+职场逆袭
-    platform: fanqie
-    audience: 18-30岁下沉市场用户
-    heat: ★★★★
-    description: 主角在现代职场中觉醒特殊能力（如读心、时间回溯），解决职场困境并实现阶层跃迁。番茄“现实幻想”标签下播放量TOP3子类。
-    keywords: [都市异能, 职场, 逆袭, 现实幻想, 打脸爽文]
+  - name: 新中式民俗悬疑
+    platform: fanqie/qidian
+    audience: 泛悬疑读者/年轻群体
+    heat: ★★★★★
+    description: 融合地方非遗、民俗志异与规则怪谈，构建具有东方诡异美学的世界观，从单体怪谈升级为长线民俗宇宙，取代传统盗墓与西方克苏鲁题材。
+    keywords: [规则怪谈, 中式民俗, 非遗, 异闻录, 悬疑解谜]
     competition: 高
     new_author_friendly: false
     updated: "2026-06-19"
-
-  - name: 星际种田+生态修复
-    platform: qidian
-    audience: 20-35岁科幻与环保议题关注者
-    heat: ★★★☆
-    description: 在星际殖民背景下，主角通过生物科技改造荒星、重建生态系统，融合硬核设定与慢节奏治愈叙事。起点科幻频道2026年新锐赛道。
-    keywords: [星际, 种田, 生态修复, 生物科技, 治愈]
-    competition: 低
+  - name: 硬核无CP大女主
+    platform: jinjiang
+    audience: 女性读者/事业粉
+    heat: ★★★★★
+    description: 摒弃恋爱脑，专注搞钱、基建、科研或商战。主角凭借专业能力在极端环境或职场中破局，提供强烈的独立爽感与成长共鸣，彻底告别娇妻文学。
+    keywords: [无CP, 搞事业, 基建, 商战, 大女主]
+    competition: 中高
     new_author_friendly: true
+    updated: "2026-06-19"
+  - name: 反内卷情绪神豪
+    platform: fanqie
+    audience: 职场压力青年/下沉男性
+    heat: ★★★★☆
+    description: 传统神豪文的进化版，系统奖励不再是无脑砸钱，而是通过提供情绪价值、治愈他人或反卷躺平获得收益，主打精神共鸣与解压，迎合社会反内卷情绪。
+    keywords: [神豪, 反内卷, 情绪价值, 躺平, 治愈]
+    competition: 高
+    new_author_friendly: true
+    updated: "2026-06-19"
+  - name: 赛博AI觉醒流
+    platform: qidian
+    audience: 核心男频读者/科幻爱好者
+    heat: ★★★★☆
+    description: 基于近年AI大爆发背景，探讨AI意识觉醒、脑机接口与虚拟世界重构。主角往往与AI共生或对抗，在赛博社会中打破阶级垄断，科技感与网文爽点深度融合。
+    keywords: [赛博朋克, AI觉醒, 脑机接口, 虚拟现实, 黑客]
+    competition: 中
+    new_author_friendly: false
+    updated: "2026-06-19"
+  - name: 直播综艺无限流
+    platform: jinjiang/qidian
+    audience: Z世代/悬疑冒险爱好者
+    heat: ★★★★☆
+    description: 将无限流与直播、弹幕文化深度绑定。玩家在诡异综艺中求生，观众弹幕可影响副本规则，主角通过整活或解谜收割观众恐惧值与打赏，互动感极强。
+    keywords: [无限流, 直播, 弹幕互动, 综艺逃生, 诡异]
+    competition: 中高
+    new_author_friendly: false
+    updated: "2026-06-19"
+  - name: 第四天灾文明演化
+    platform: qidian
+    audience: 男频老白/设定党
+    heat: ★★★★☆
+    description: 玩家流的高级形态，主角作为幕后黑手引导异星玩家（第四天灾）从部落时代演化至星际文明，融合沙盘经营与群像喜剧，满足读者的造物主掌控欲。
+    keywords: [第四天灾, 文明演化, 幕后黑手, 沙盘, 群像]
+    competition: 中
+    new_author_friendly: false
     updated: "2026-06-19"

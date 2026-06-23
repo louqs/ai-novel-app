@@ -330,7 +330,7 @@ class OrchestrationEngine:
         await kernel.context().set(ns, "current_chapter", ch)
         await kernel.context().set(ns, "current_volume", vol)
 
-        # 保存章节
+        # 保存章节到文件（DB 保存由调用者负责，使用 auto_snapshot=True）
         chapter_id = chapter.get("chapter_id", f"ch_v{vol:02d}_{ch:04d}")
         await kernel.write_project_file(
             ctx.project_id,

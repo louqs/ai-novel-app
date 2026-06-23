@@ -1,13 +1,10 @@
 """知识图谱管理插件 — 自动维护小说知识图谱。
 
 功能:
-    1. 章节完成后自动提取实体/关系写入图
-    2. 设定变更时同步更新图
-    3. 提供图查询 API
+    1. 章节完成后自动提取实体/关系写入图 (on_chapter_after)
+    2. 从设定/章节构建图谱 (build_from_settings，含 LLM 自动提取)
 
-用法:
-    manager = GraphManagerPlugin()
-    await manager.on_chapter_after(chapter_dict)
+查询和清空操作由 routes 直接调用 core/graph_query.py + core/graph_store.py。
 """
 
 from __future__ import annotations
@@ -136,10 +133,7 @@ class GraphManagerPlugin:
 
     async def _extract_characters_from_chapters(self, project_id: str) -> tuple[dict, list]:
         """从已有章节中通过 LLM 自动提取人物和关系。"""
-        # 收集所有章节内容
         all_content = ""
-
-        # 从 progress 获取所有卷和章节信息
         progress = await self._kernel.context().get(f"project:{project_id}", "progress", {})
         chapter_count = 0
         for vol in progress.get("volumes", []):
@@ -168,7 +162,6 @@ class GraphManagerPlugin:
         if not all_content.strip():
             return {}, []
 
-        # 调用 LLM 提取
         prompt = f"""从以下小说章节中提取所有人物和关系，以JSON返回。
 
 章节内容：
@@ -196,7 +189,7 @@ class GraphManagerPlugin:
                 max_tokens=2048,
                 temperature=0.2,
             )
-            import json, re
+            import re
             content = result.get("content", "{}")
             m = re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
             if m:
@@ -205,35 +198,6 @@ class GraphManagerPlugin:
             return data.get("characters", {}), data.get("relationships", [])
         except Exception:
             return {}, []
-
-    async def query_character_network(self, character_id: str) -> dict:
-        """查询人物关系网。"""
-        if not self._query:
-            return {"nodes": [], "edges": []}
-        return await self._query.character_network(character_id)
-
-    async def query_all_characters(self) -> list[dict]:
-        """列出所有人物。"""
-        if not self._query:
-            return []
-        return await self._query.all_characters()
-
-    async def query_entity(self, entity_id: str) -> dict:
-        """查询实体邻域。"""
-        if not self._query:
-            return {}
-        return await self._query.entity_neighborhood(entity_id)
-
-    async def export_graph(self) -> dict:
-        """导出全图（可视化用）。"""
-        if not self._query:
-            return {"nodes": [], "edges": []}
-        return await self._query.export_full_graph()
-
-    async def clear_graph(self) -> None:
-        """清空图谱。"""
-        if self._store:
-            await self._store.clear()
 
 
 def create_manifest() -> PluginManifest:

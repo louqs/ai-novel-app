@@ -473,32 +473,24 @@ async def humanize_text_get():
 
 @router.post("/api/v1/anti-ai/humanize", response_model=dict)
 async def humanize_text(data: AntiAIHumanizeRequest):
-    """对文本进行人性化改写."""
+    """对文本进行人性化改写 — 通过 TextTransformer 统一入口."""
     kernel = await get_kernel()
     if not data.text.strip():
         return {"content": data.text, "mode": data.mode, "note": "empty text"}
 
-    # 直接用 HumanizationEngine 确保 LLM 调用
-    from plugins.anti_ai_detection.humanization_engine import HumanizationEngine
-    from plugins.anti_ai_detection.pattern_detector import AIPatternDetector
-
-    engine = HumanizationEngine()
-    await engine.on_load(kernel)
-    detector = AIPatternDetector()
-    matches = detector.detect(data.text)
-    match_dicts = [{"category": m.category, "matched_items": m.matched_items} for m in matches]
+    from core.text_transformer import TextTransformer
+    transformer = TextTransformer(kernel)
 
     try:
-        result = await engine.humanize(
-            data.text,
-            mode=data.mode,
-            detected_patterns=match_dicts,
-            target_word_count=data.target_word_count,
+        step_result = await transformer.deai(
+            data.text, mode=data.mode, target_word_count=data.target_word_count,
         )
-        if result and result != data.text:
-            return {"content": result, "mode": data.mode, "changed": True}
+        output = step_result.output_text
+        if output and output != data.text:
+            return {"content": output, "mode": data.mode, "changed": True}
         else:
-            return {"content": data.text, "mode": data.mode, "changed": False, "note": "LLM returned same or empty; text unchanged"}
+            return {"content": data.text, "mode": data.mode, "changed": False,
+                    "note": "LLM returned same or empty; text unchanged"}
     except Exception as e:
         return {"content": data.text, "mode": data.mode, "changed": False, "error": str(e)[:200]}
 

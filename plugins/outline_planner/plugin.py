@@ -145,12 +145,27 @@ class OutlinePlannerPlugin:
         """生成卷级大纲."""
         chars_summary = self._summarize_characters(characters)
 
+        title = direction.get('title', '')
+        logline = direction.get('logline', '')
+        core_conflict = direction.get('core_conflict', '')
+        world_name = settings.get('world_name', '')
+
+        # 构建故事描述，确保有足够信息
+        story_parts = []
+        if title:
+            story_parts.append(f"**书名**: {title}")
+        if logline:
+            story_parts.append(f"**故事简介**: {logline}")
+        if core_conflict:
+            story_parts.append(f"**核心冲突**: {core_conflict}")
+        if world_name:
+            story_parts.append(f"**世界观**: {world_name}")
+        story_info = "\n".join(story_parts) if story_parts else "**故事**: （未提供，请自行构思一个有吸引力的故事）"
+
         prompt = f"""请为以下小说规划分卷大纲:
 
-**故事**: {direction.get('logline', '')}
-**核心冲突**: {direction.get('core_conflict', '')}
-**世界观**: {settings.get('world_name', '')}
-**人物**: {chars_summary}
+{story_info}
+**人物**: {chars_summary if chars_summary else "（未提供）"}
 **平台**: {platform}
 **总章节数**: {total_chapters}
 **分卷数**: {num_volumes}
@@ -202,9 +217,21 @@ class OutlinePlannerPlugin:
         chapters_count = volume.get("chapters_count", 25)
         vol_num = volume.get("volume_number", 1)
 
+        # 故事上下文
+        logline = direction.get('logline', '')
+        title = direction.get('title', '')
+        chars_summary = self._summarize_characters(characters)
+        story_ctx = ""
+        if title:
+            story_ctx += f"书名: {title}\n"
+        if logline:
+            story_ctx += f"故事简介: {logline}\n"
+        if chars_summary:
+            story_ctx += f"主要人物: {chars_summary}\n"
+
         prompt = f"""请为第{vol_num}卷规划 {chapters_count} 个章节节点。
 
-卷名: {volume.get('title', '')}
+{story_ctx}卷名: {volume.get('title', '')}
 卷弧光: {volume.get('arc_description', '')}
 
 以 JSON 返回（只返回 JSON）:
