@@ -14,13 +14,18 @@
 .version-meta .tag.accent{background:rgba(156,39,176,0.15);color:#ce93d8}
 .version-expand-btn{background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:11px;padding:2px 4px}
 .version-expand-btn:hover{color:var(--accent)}
-.version-detail{display:none;margin-top:8px;max-height:240px;overflow-y:auto;border-top:1px solid var(--border);padding-top:8px}
+.version-detail{display:none;margin-top:8px;max-height:60vh;overflow-y:auto;border-top:1px solid var(--border);padding-top:8px}
 .version-detail.open{display:block}
 .version-detail .ch-row{font-size:11px;padding:3px 0;display:flex;gap:4px}
 .version-detail .ch-row .ch-num{color:var(--text-muted);min-width:40px}
 .version-detail .ch-row .ch-title{flex:1;line-height:1.4}
+.outline-chapter{padding:4px 6px;border-radius:4px;transition:background 0.15s}
+.outline-chapter:hover{background:var(--surface)}
+.outline-chapter.completed{color:var(--ok)}
+.outline-chapter.completed .ch-status-icon{color:var(--ok)}
 .outline-chapter.generating{border:2px solid #9c27b0;border-radius:6px;padding:2px 4px;margin:-2px -4px;animation:pulse-border 1.5s ease-in-out infinite;background:rgba(156,39,176,0.08)}
 .outline-chapter.just-completed{animation:flash-ok 0.6s ease-out;border:2px solid var(--ok);border-radius:6px;padding:2px 4px;margin:-2px -4px}
+.outline-chapter.gen-failed{color:var(--bad);border:2px solid var(--bad);border-radius:6px;padding:2px 4px;margin:-2px -4px;opacity:0.8}
 @keyframes pulse-border{0%,100%{border-color:#9c27b0;box-shadow:0 0 0 0 rgba(156,39,176,0.3)}50%{border-color:#ce93d8;box-shadow:0 0 8px 2px rgba(156,39,176,0.2)}}
 @keyframes flash-ok{0%{background:rgba(76,175,80,0.25)}100%{background:transparent}}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
@@ -49,6 +54,11 @@
 .idea-card .idea-tags{display:flex;flex-wrap:wrap;gap:3px;margin-top:6px}
 .idea-card .idea-tags span{font-size:10px;padding:1px 6px;background:var(--surface2);border-radius:3px}
 .idea-card .idea-actions{margin-top:8px;display:flex;gap:6px}
+.outline-controls{display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.outline-controls select{padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:11px;cursor:pointer;transition:all 0.2s}
+.outline-controls select:hover{border-color:var(--accent)}
+.outline-controls select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(124,92,252,0.15)}
+.outline-controls .btn-primary{flex:1;min-width:100px}
 </style>
 {% endblock %}
 
@@ -61,12 +71,35 @@
             <div id="project-info" class="project-info-compact"></div>
         </div>
         <div class="wb-section" style="flex:1;overflow-y:auto;min-height:0;display:flex;flex-direction:column">
-            <div class="section-header"><h3>📋 大纲</h3><span style="display:flex;gap:4px">
-    <button class="btn btn-sm" onclick="generateOutline()" id="btn-outline" disabled>生成</button>
-    <button class="btn btn-sm" onclick="addChapter()" id="btn-add-ch" disabled title="追加章节">+</button>
-    <button class="btn btn-sm" onclick="editOutline()" id="btn-edit-ol" disabled title="编辑大纲">✏️</button>
-    <button class="btn btn-sm" onclick="showOutlineVersions()" id="btn-ol-versions" disabled title="大纲版本历史">🕐</button>
-</span></div>
+            <div class="section-header"><h3>📋 大纲</h3>
+                <div style="display:flex;gap:4px;align-items:center">
+                    <button class="btn btn-sm" onclick="editOutline()" id="btn-edit-ol" disabled title="编辑大纲">✏️</button>
+                    <button class="btn btn-sm" onclick="showOutlineVersions()" id="btn-ol-versions" disabled title="大纲版本历史">🕐</button>
+                </div>
+            </div>
+            <div class="outline-controls">
+                <button class="btn btn-sm btn-primary" onclick="generateOutline()" id="btn-outline" disabled>⚡ 生成大纲</button>
+                <select id="outline-version-count" title="生成方案数">
+                    <option value="1">1版</option>
+                    <option value="2">2版</option>
+                    <option value="3" selected>3版</option>
+                    <option value="4">4版</option>
+                    <option value="5">5版</option>
+                </select>
+                <select id="outline-volume-count" title="分卷数">
+                    <option value="0" selected>📚 自动分卷</option>
+                    <option value="1">📄 不分卷</option>
+                    <option value="2">📖 2卷</option>
+                    <option value="3">📖 3卷</option>
+                    <option value="4">📖 4卷</option>
+                    <option value="5">📖 5卷</option>
+                    <option value="6">📖 6卷</option>
+                    <option value="7">📖 7卷</option>
+                    <option value="8">📖 8卷</option>
+                    <option value="9">📖 9卷</option>
+                    <option value="10">📖 10卷</option>
+                </select>
+            </div>
 <div id="outline-info" class="muted" style="font-size:10px;padding:2px 0"></div>
             <div id="outline-tree" class="outline-tree" ondragover="dragOver(event)" ondrop="dropChapter(event)"><p class="muted">选择项目后加载</p></div>
             <div id="outline-detail" class="outline-detail" style="display:none;margin-top:6px;padding:8px;background:var(--surface2);border-radius:4px;font-size:12px"></div>

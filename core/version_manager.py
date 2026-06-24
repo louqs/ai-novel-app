@@ -144,15 +144,7 @@ class VersionManager:
         *,
         kernel: Any = None,
     ) -> dict:
-        """回滚章节到指定版本.
-
-        1. 先快照当前版本（source=rollback）
-        2. 用目标版本内容覆盖当前章节
-        3. 更新数据库和文件系统
-
-        Returns:
-            {"status": "rolled_back", "version_id": int, "word_count": int}
-        """
+        """回滚章节到指定版本（不创建新历史版本，只切换当前版本指针）."""
         target = await self._db.get_chapter_version(target_version_id)
         if not target:
             raise ValueError(f"版本 {target_version_id} 不存在")
@@ -161,26 +153,19 @@ class VersionManager:
         content = target["content"]
         title = target.get("title", "")
 
-        # 快照当前版本
-        current = await self._db.get_chapter(project_id, chapter_number, volume_number)
-        if current:
-            await self.snapshot_chapter(
-                project_id,
-                current.get("id", chapter_id),
-                chapter_number,
-                current.get("title", title),
-                current.get("content", ""),
-                volume_number=volume_number,
-                source="pre_rollback",
-                change_summary=f"回滚前自动快照 -> 目标版本 #{target_version_id}",
-            )
-
-        # 覆盖数据库
-        await self._db.save_chapter(chapter_id, project_id, chapter_number, title, content, volume=volume_number)
+        # 覆盖数据库（跳过自动快照，回滚不创建新版本）
+        await self._db.save_chapter(chapter_id, project_id, chapter_number, title, content, volume=volume_number, auto_snapshot=False)
 
         # 覆盖文件系统
         if kernel:
             await kernel.write_project_file(project_id, f"chapters/{chapter_id}.md", content)
+
+        # 存储当前版本指针
+        key = f"ch_ver_{project_id}_{volume_number}_{chapter_number}"
+        if kernel and kernel.db:
+            settings = await kernel.db.get_settings(project_id)
+            settings[key] = target_version_id
+            await kernel.db.save_settings(project_id, settings)
 
         logger.info(
             "章节已回滚",
@@ -281,26 +266,12 @@ class VersionManager:
     async def rollback_outline(
         self, project_id: str, target_version_id: int, *, kernel: Any = None
     ) -> dict:
-        """回滚大纲到指定版本.
-
-        1. 先快照当前版本
-        2. 用目标版本数据覆盖当前大纲
-        """
+        """回滚大纲到指定版本（不创建新历史版本，只切换当前版本指针）."""
         target = await self.get_outline_version(target_version_id)
         if not target:
             raise ValueError(f"版本 {target_version_id} 不存在")
 
         outline_data = target["outline_data"]
-
-        # 快照当前大纲
-        if kernel:
-            ns = f"project:{project_id}"
-            current_data = await kernel.context().get(ns, "progress")
-            if current_data:
-                await self.snapshot_outline(
-                    project_id, current_data, source="pre_rollback",
-                    change_summary=f"回滚前自动快照 -> 目标版本 #{target_version_id}",
-                )
 
         # 覆盖文件系统
         if kernel:
@@ -315,7 +286,12 @@ class VersionManager:
             if kernel.db:
                 settings = await kernel.db.get_settings(project_id)
                 settings["progress"] = outline_data
+                settings["outline_current_version_id"] = target_version_id
                 await kernel.db.save_settings(project_id, settings)
+        elif self._db:
+            settings = await self._db.get_settings(project_id)
+            settings["outline_current_version_id"] = target_version_id
+            await self._db.save_settings(project_id, settings)
 
         logger.info("大纲已回滚", project_id=project_id, target_version=target_version_id)
         return {

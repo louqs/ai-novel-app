@@ -24,14 +24,22 @@ async def create_project(data: ProjectCreate):
     kernel = await get_kernel()
     project_id = f"proj_{uuid.uuid4().hex[:12]}"
 
+    genre_tags = data.genre_tags
+
+    # 如果用户没填标签但有梗概，用 LLM 自动推断题材
+    if not genre_tags and data.one_liner:
+        genre_tags = await _infer_genre_tags(kernel, data.one_liner)
+
     meta = ProjectMeta(
         project_id=project_id,
         title=data.title,
         platform=Platform(data.platform) if data.platform in [e.value for e in Platform] else Platform.FANQIE,
         length=data.length,
-        genre_tags=data.genre_tags,
+        genre_tags=genre_tags,
         one_liner=data.one_liner,
         target_words_per_chapter=data.target_words_per_chapter,
+        min_words=data.min_words,
+        max_words=data.max_words,
     )
 
     # 数据库存储
@@ -90,6 +98,16 @@ async def get_project(project_id: str):
     if kernel.db:
         proj = await kernel.db.get_project(project_id)
         if proj:
+            # 从 meta_json 补充字段（min_words/max_words 等存在 meta_json 中）
+            meta_json = proj.get("meta_json")
+            if meta_json and isinstance(meta_json, str):
+                try:
+                    extra = json.loads(meta_json)
+                    for k, v in extra.items():
+                        if k not in proj or proj[k] is None:
+                            proj[k] = v
+                except (json.JSONDecodeError, TypeError):
+                    pass
             # 确保 genre_tags 是列表
             if isinstance(proj.get("genre_tags"), str):
                 try:
@@ -145,15 +163,19 @@ async def update_project(project_id: str, data: ProjectUpdate):
     # 同步更新数据库（过滤掉不可更新的字段，序列化复杂类型）
     if kernel.db:
         try:
+            # 数据库有独立列的字段
+            DB_COLUMNS = {'title', 'platform', 'length', 'genre_tags', 'one_liner', 'status', 'current_chapter', 'updated_at'}
             db_data = {}
             for k, v in meta.items():
-                if k in ('id', 'project_id', 'created_at'):
+                if k in ('id', 'project_id', 'created_at', 'meta_json'):
                     continue
-                # 将 list/dict 转换为 JSON 字符串
-                if isinstance(v, (list, dict)):
-                    db_data[k] = json.dumps(v, ensure_ascii=False)
-                else:
-                    db_data[k] = v
+                if k in DB_COLUMNS:
+                    if isinstance(v, (list, dict)):
+                        db_data[k] = json.dumps(v, ensure_ascii=False)
+                    else:
+                        db_data[k] = v
+            # 同步更新 meta_json（包含 min_words/max_words 等扩展字段）
+            db_data['meta_json'] = json.dumps(meta, ensure_ascii=False, default=str)
             await kernel.db.update_project(project_id, db_data)
         except Exception as e:
             logger.warning("数据库更新失败", error=str(e))
@@ -179,15 +201,15 @@ async def update_project(project_id: str, data: ProjectUpdate):
 @router.delete("/{project_id}", response_model=StatusResponse)
 async def delete_project(project_id: str):
     """删除项目."""
+    import asyncio, shutil
     kernel = await get_kernel()
-    # 删数据库
+    # 删数据库（单一事务）
     if kernel.db:
         await kernel.db.delete_project(project_id)
-    # 删文件
-    import shutil
+    # 异步删文件，避免阻塞事件循环
     proj_dir = kernel.get_project_dir(project_id)
     if proj_dir.exists():
-        shutil.rmtree(proj_dir)
+        await asyncio.to_thread(shutil.rmtree, proj_dir)
     return StatusResponse(message=f"项目 {project_id} 已删除")
 
 
@@ -294,3 +316,58 @@ async def payoff_foreshadow(project_id: str, foreshadow_id: str):
     )
 
     return {"foreshadow_id": foreshadow_id, "status": "paid"}
+
+
+# =============================================================================
+# 内部工具
+# =============================================================================
+
+
+_GENRE_LIST = [
+    "都市", "修仙", "玄幻", "悬疑", "推理", "科幻", "历史", "军事",
+    "言情", "宫斗", "穿越", "重生", "系统流", "无敌流", "末日",
+    "武侠", "仙侠", "奇幻", "恐怖", "校园", "职场", "游戏",
+    "二次元", "赛博朋克", "蒸汽朋克", "克苏鲁", "无限流",
+    "90年代", "乡土", "港综", "黑道", "体育", "美食",
+]
+
+
+async def _infer_genre_tags(kernel, one_liner: str) -> list[str]:
+    """用 LLM 从梗概自动推断题材标签."""
+    try:
+        result = await kernel.call_llm(
+            messages=[
+                {"role": "system", "content": "你是小说题材分析专家。根据用户的一句话梗概，判断属于哪些题材标签。只返回 JSON 数组，不要其他内容。"},
+                {"role": "user", "content": f"可选标签：{', '.join(_GENRE_LIST)}\n\n梗概：{one_liner}\n\n请返回最相关的 1-3 个标签的 JSON 数组，如 [\"都市\", \"重生\"]"},
+            ],
+            tier="budget",
+            max_tokens=100,
+            temperature=0.1,
+        )
+        import json
+        import re
+        raw = result["content"].strip()
+        # 尝试直接解析
+        try:
+            tags = json.loads(raw)
+        except json.JSONDecodeError:
+            # 提取 ```json ... ``` 代码块
+            match = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', raw)
+            if match:
+                tags = json.loads(match.group(1))
+            else:
+                # 找第一个数组
+                start = raw.find('[')
+                if start >= 0:
+                    end = raw.rfind(']')
+                    if end > start:
+                        tags = json.loads(raw[start:end + 1])
+                    else:
+                        raise json.JSONDecodeError("未找到数组结束符", raw, 0)
+                else:
+                    raise json.JSONDecodeError("未找到JSON数组", raw, 0)
+        if isinstance(tags, list) and all(isinstance(t, str) for t in tags):
+            return tags[:3]
+    except Exception as e:
+        logger.warning("题材推断失败", error=str(e))
+    return []

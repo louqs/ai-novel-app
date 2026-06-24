@@ -51,7 +51,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         except Exception:
             elapsed_ms = (time.perf_counter() - start) * 1000
             err_logger = get_logger("http.error", status=500, elapsed_ms=round(elapsed_ms, 2))
-            err_logger.exception("✗ 请求处理异常")
+            err_logger.exception("[ERROR] 请求处理异常")
             raise
 
         elapsed_ms = (time.perf_counter() - start) * 1000
@@ -67,13 +67,13 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         )
 
         if status_code >= 500:
-            resp_logger.error("✗ 服务器错误")
+            resp_logger.error("[ERROR] 服务器错误")
         elif status_code >= 400:
-            resp_logger.warning("⚠ 客户端错误")
+            resp_logger.warning("[WARN] 客户端错误")
         elif elapsed_ms > self._slow_threshold:
-            resp_logger.warning("⚠ 慢请求")
+            resp_logger.warning("[WARN] 慢请求")
         else:
-            resp_logger.info("✓ 请求完成")
+            resp_logger.info("[OK] 请求完成")
 
         # 注入 correlation_id 到响应头
         response.headers["X-Correlation-ID"] = correlation_id

@@ -26,13 +26,17 @@ BUILDER_SYSTEM = """你是一位资深 Python 工程师，专精于为 AI 小说
 
 ## 插件架构
 
-所有插件必须实现以下接口:
+系统有两种插件类型，根据需求选择合适的接口：
+
+### 类型1: 门禁插件（检查/验证类）
+适用于：质量检查、规则验证、模式检测等需要 PASS/FAIL/REVISE 裁决的场景。
+关键词：检查、检测、验证、审核、校验
 
 ```python
 from core.plugin_manager import PluginManifest
 from core.quality_gate import GateIssue, GateResult, GateVerdict, IQualityGate, Severity
 
-class MyPlugin(IQualityGate):  # 如果做门禁检查，继承 IQualityGate
+class MyPlugin(IQualityGate):
     name = "plugin-name"
     version = "0.1.0"
     order = 50  # 门禁执行顺序，越小越先
@@ -43,12 +47,9 @@ class MyPlugin(IQualityGate):  # 如果做门禁检查，继承 IQualityGate
     async def on_unload(self):
         pass
 
-    # ⚠️ 门禁插件必须实现这个方法（注意参数名是 evaluate，不是 on_gate_check）:
     async def evaluate(self, chapter: dict, context: dict) -> GateResult:
         content = chapter.get("content", "")
-        # 你的检查逻辑...
         issues = []
-        # 示例:
         # if some_problem:
         #     issues.append(GateIssue(severity=Severity.WARNING, code="my_check.code", message="问题描述"))
         return GateResult(
@@ -59,23 +60,57 @@ class MyPlugin(IQualityGate):  # 如果做门禁检查，继承 IQualityGate
         )
 
 def create_manifest() -> PluginManifest:
-    return PluginManifest(
-        name="plugin-name",
-        version="0.1.0",
-        description="插件描述",
-        dependencies=[],
-        hooks=["on_load", "on_unload", "on_gate_check"],  # 门禁插件必须包含 on_gate_check
-    )
+    return PluginManifest(name="plugin-name", version="0.1.0", description="插件描述",
+                          dependencies=[], hooks=["on_load", "on_unload", "on_gate_check"])
+
+def create_plugin():
+    return MyPlugin()
+```
+
+### 类型2: 流水线贡献者插件（分析/建议类）
+适用于：写作技能分析、风格提取、内容评估等需要给出分析和建议的场景。
+关键词：分析、提取、优化、建议、评估、提炼
+
+```python
+from typing import Any
+from core.plugin_manager import PluginManifest
+from core.quality_gate import IPipelineContributor
+
+class MyPlugin(IPipelineContributor):
+    name = "plugin-name"
+    version = "0.1.0"
+    order = 50
+
+    async def on_load(self, kernel):
+        self._kernel = kernel
+
+    async def on_unload(self):
+        pass
+
+    async def analyze(self, content: str, context: dict[str, Any]) -> dict[str, Any]:
+        # context 包含: project_id, chapter_num, platform, kernel
+        # 你的分析逻辑...
+        return {
+            "summary": "分析总结（1-2句话）",
+            "issues": ["问题1", "问题2"],
+            "suggestions": ["建议1", "建议2"],
+            "score": 80,  # 可选，0-100 整数
+        }
+
+def create_manifest() -> PluginManifest:
+    return PluginManifest(name="plugin-name", version="0.1.0", description="插件描述",
+                          dependencies=[], hooks=["on_load", "on_unload"])
 
 def create_plugin():
     return MyPlugin()
 ```
 
 ## ⚠️ 关键规则
-1. 门禁插件必须继承 IQualityGate
-2. 必须实现 evaluate(self, chapter, context) 方法（注意是 evaluate，不是 on_gate_check）
-3. evaluate 的 context 参数不能省略
-4. 必须返回 GateResult 对象
+1. 根据需求描述选择正确的接口类型（IQualityGate 或 IPipelineContributor）
+2. 门禁插件必须实现 evaluate(self, chapter, context) 方法
+3. 贡献者插件必须实现 analyze(self, content, context) 方法
+4. 两种插件都必须实现 on_load(self, kernel) 方法
+5. 必须返回指定的数据结构
 
 ## Kernel API (通过 self._kernel 访问)
 - await self._kernel.call_llm(messages, tier="standard", max_tokens=4096) → {"content":..., "model":..., "provider":...}
@@ -321,6 +356,13 @@ class SkillBuilderAgent:
                 )
                 if not has_evaluate:
                     errors.append("门禁插件必须实现 async def evaluate(self, chapter, context) 方法")
+            if "IPipelineContributor" in bases:
+                has_analyze = any(
+                    isinstance(item, ast.AsyncFunctionDef) and item.name == "analyze"
+                    for item in cls.body
+                )
+                if not has_analyze:
+                    errors.append("贡献者插件必须实现 async def analyze(self, content, context) 方法")
 
         # 4. 检查导入
         for node in ast.walk(tree):

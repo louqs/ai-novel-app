@@ -100,7 +100,7 @@ class Kernel(IKernelAPI):
                         logger.info("Provider 已注册", name=name, type=ptype)
 
                 elif ptype == "claude":
-                    adapter = ClaudeAdapter(api_key=api_key)
+                    adapter = ClaudeAdapter(api_key=api_key, default_model=default_model)
                     adapter.provider_name = name
                     registry.register_adapter(adapter)
                     logger.info("Provider 已注册", name=name, type=ptype)
@@ -118,15 +118,34 @@ class Kernel(IKernelAPI):
         if self.db:
             for p in await self.db.list_providers_db():
                 name = p["name"]
+                ptype = p.get("type", "openai_compatible")
                 try:
-                    adapter = OpenAICompatibleAdapter(
-                        name=name, base_url=p.get("base_url",""),
-                        api_key=p.get("api_key",""), default_model=p.get("default_model",""),
-                    )
+                    if ptype == "claude":
+                        from core.llm.claude_adapter import ClaudeAdapter
+                        adapter = ClaudeAdapter(
+                            api_key=p.get("api_key", ""),
+                            base_url=p.get("base_url", "") or None,
+                            default_model=p.get("default_model", "claude-sonnet-4-6-20250514"),
+                        )
+                        adapter.provider_name = name
+                    elif ptype == "ollama":
+                        from core.llm.ollama_adapter import OllamaAdapter
+                        adapter = OllamaAdapter(
+                            base_url=p.get("base_url", "http://localhost:11434"),
+                            default_model=p.get("default_model", ""),
+                        )
+                        adapter.provider_name = name
+                    else:
+                        # openai_compatible (默认)
+                        adapter = OpenAICompatibleAdapter(
+                            name=name, base_url=p.get("base_url", ""),
+                            api_key=p.get("api_key", ""), default_model=p.get("default_model", ""),
+                        )
                     registry.register_adapter(adapter)
-                    logger.info("从数据库加载 Provider", name=name, source="db_override" if name in {pc.get("name") for pc in providers_cfg} else "db_only")
-                except Exception:
-                    pass
+                    logger.info("从数据库加载 Provider", name=name, type=ptype,
+                               source="db_override" if name in {pc.get("name") for pc in providers_cfg} else "db_only")
+                except Exception as e:
+                    logger.warning("从数据库加载 Provider 失败", name=name, error=str(e))
 
             # 从数据库加载保存的 tier 配置
             await registry.load_from_database()
@@ -193,6 +212,7 @@ class Kernel(IKernelAPI):
             tools=tools,
             provider_override=provider,
             model_override=model,
+            response_format=response_format,
         )
         return {
             "content": result.content,
@@ -251,15 +271,17 @@ class Kernel(IKernelAPI):
         return get_logger(name, plugin=name)
 
     async def read_project_file(self, project_id: str, path: str) -> str:
+        import asyncio
         full_path = self._data_dir / project_id / path
         if not full_path.exists():
             raise FileNotFoundError(f"文件不存在: {full_path}")
-        return full_path.read_text(encoding="utf-8")
+        return await asyncio.to_thread(full_path.read_text, "utf-8")
 
     async def write_project_file(self, project_id: str, path: str, content: str) -> None:
+        import asyncio
         full_path = self._data_dir / project_id / path
         full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(content, encoding="utf-8")
+        await asyncio.to_thread(full_path.write_text, content, "utf-8")
 
     def get_project_dir(self, project_id: str) -> Path:
         return self._data_dir / project_id

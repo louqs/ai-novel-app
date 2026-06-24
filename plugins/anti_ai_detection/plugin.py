@@ -265,7 +265,7 @@ class AntiAIDetectionPlugin(IQualityGate):
     async def humanize(
         self,
         content: str,
-        mode: str = "standard",
+        mode: str = "unified",
         novel_type: str = "",
         target_word_count: int | None = None,
     ) -> str:
@@ -273,7 +273,7 @@ class AntiAIDetectionPlugin(IQualityGate):
 
         Args:
             content: 原始文本.
-            mode: 改写深度 — light / standard / deep / three_axe / chaos / deai.
+            mode: 改写模式 — unified(默认) / light / standard / deep / three_axe / chaos / deai.
             novel_type: 小说类型（90年代乡土/港综/都市重生）.
             target_word_count: 目标字数.
         """
@@ -285,12 +285,24 @@ class AntiAIDetectionPlugin(IQualityGate):
             {"category": m.category, "matched_items": m.matched_items}
             for m in matches
         ]
+
+        # 计算AI分数和详细检测数据
+        ai_score = self._detector.calculate_ai_score(content) if self._detector else 0.0
+        detection_details = {}
+        if self._detector:
+            detection_details = {
+                "sentence_uniformity": self._detector.detect_uniform_sentences(content),
+                "dialogue_ratio": self._detector.check_dialogue_quotes(content),
+            }
+
         return await self._humanizer.humanize(
             content,
             mode=mode,
             detected_patterns=match_dicts,
             novel_type=novel_type,
             target_word_count=target_word_count,
+            ai_score=ai_score,
+            detection_details=detection_details,
         )
 
     async def adversarial_rewrite(self, content: str, iterations: int = 2) -> str:

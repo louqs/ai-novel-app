@@ -166,9 +166,10 @@ async def ab_compare_chapter(project_id: str, data: dict):
 
 @router.post("/api/v1/projects/{project_id}/rewrite", response_model=dict)
 async def rewrite_selection(project_id: str, data: dict):
-    """段落重写 — 对选中文本进行局部改写."""
+    """段落重写 — 对选中文本进行局部改写（基于整章上下文）."""
     kernel = await get_kernel()
     selected_text = data.get("text", "").strip()
+    full_content = data.get("full_content", "")
     context_before = data.get("context_before", "")
     context_after = data.get("context_after", "")
     instruction = data.get("instruction", "")
@@ -180,26 +181,70 @@ async def rewrite_selection(project_id: str, data: dict):
     platform_names = {"fanqie": "番茄小说", "qidian": "起点中文网", "jinjiang": "晋江文学城"}
     pname = platform_names.get(platform, platform)
 
-    prompt = f"""请对以下选中的段落进行改写。
+    # 如果有完整内容，用标记分隔的方式让 AI 看到全章
+    if full_content and len(full_content) > len(selected_text) + 100:
+        # 在完整内容中标记需要改写的部分
+        sel_start = data.get("selection_start", 0)
+        sel_end = data.get("selection_end", 0)
 
-【上下文-前文】
-{context_before[-500:]}
+        # 验证选区位置是否匹配
+        if sel_start >= 0 and sel_end <= len(full_content) and full_content[sel_start:sel_end] == selected_text:
+            marked_content = (
+                full_content[:sel_start]
+                + "\n<<<REWRITE_START>>>\n"
+                + selected_text
+                + "\n<<<REWRITE_END>>>\n"
+                + full_content[sel_end:]
+            )
+            prompt = f"""请改写以下小说章节中用 <<<REWRITE_START>>> 和 <<<REWRITE_END>>> 标记的段落。
 
-【需要改写的段落】
-{selected_text}
-
-【上下文-后文】
-{context_after[:500]}
+【完整章节内容（标记处为需要改写的部分）】
+{marked_content}
 
 {f"【用户指令】{instruction}" if instruction else ""}
 
 要求：
-1. 保持与前后文的连贯性
-2. 保持原文的核心情节和信息不变
-3. 优化表达方式，使其更自然、更有画面感
-4. 对话要符合人物性格
-5. 适合{pname}平台风格
-6. 改写后的字数与原文相近（±20%）
+1. **只改写标记之间的段落**，其他内容一字不动
+2. 改写后的段落必须与前后文自然衔接，不产生任何矛盾
+3. 保持原文的核心情节、人物关系、情感状态不变
+4. 保持后文中引用到的细节在改写中有对应铺垫
+5. 优化表达方式，使其更自然、更有画面感
+6. 对话要符合人物性格
+7. 适合{pname}平台风格
+8. 改写后的字数与原文相近（±20%）
+9. **严格保持叙事视角**：改写段落的叙事视角、信息量、人物认知必须与原文一致。角色在此刻不该知道的信息不能出现，不能因为看到了后文就提前暗示或剧透
+10. **禁止上帝视角泄露**：不要让角色表现出对后续情节的"预知"，不要添加原文没有的伏笔暗示
+
+只返回改写后的段落文本（不含标记），不要返回整章，不要加任何解释。"""
+        else:
+            # 选区不匹配，回退到分段模式
+            full_content = ""
+
+    # 回退：没有完整内容或选区不匹配时，用前后文片段
+    if not full_content or len(full_content) <= len(selected_text) + 100:
+        before = context_before[-800:] if context_before else ""
+        after = context_after[:2000] if context_after else ""
+        prompt = f"""请对以下选中的段落进行改写。
+
+【上下文-前文】
+{before}
+
+【需要改写的段落】
+{selected_text}
+
+【上下文-后文（改写时必须保持与此处的衔接）】
+{after[:600]}
+
+{f"【用户指令】{instruction}" if instruction else ""}
+
+要求：
+1. **严格保持与后文的衔接**：改写后的文本必须能自然过渡到后文，不产生矛盾
+2. 保持原文的核心情节、人物关系、情感状态不变
+3. 保持后文中引用到的细节在改写中有对应铺垫
+4. 优化表达方式，使其更自然、更有画面感
+5. 对话要符合人物性格
+6. 适合{pname}平台风格
+7. 改写后的字数与原文相近（±20%）
 
 只返回改写后的文本，不要加任何解释。"""
 
@@ -226,11 +271,65 @@ async def rewrite_selection(project_id: str, data: dict):
 
 @router.get("/api/v1/projects/{project_id}/chapters/list", response_model=list)
 async def list_chapters(project_id: str):
-    """列出项目所有章节（仅元数据，不含正文）。"""
+    """列出项目所有章节（仅元数据，不含正文）。
+
+    优先从数据库读取，同时扫描文件系统补充数据库中缺失的章节。
+    这样即使章节只保存到了文件系统（如数据库写入失败），重启后仍能正确显示。
+    """
     kernel = await get_kernel()
+    import re
+    from pathlib import Path
+
+    # 1. 从数据库获取章节列表
+    db_chapters = []
     if kernel.db:
-        return await kernel.db.list_chapters(project_id)
-    return []
+        try:
+            db_chapters = await kernel.db.list_chapters(project_id)
+        except Exception:
+            pass
+
+    # 2. 构建数据库中已有的章节键集合 (volume_number_chapter_number)
+    db_keys = set()
+    for ch in db_chapters:
+        vol = ch.get("volume_number", 1)
+        num = ch.get("chapter_number", 0)
+        db_keys.add(f"{vol}_{num}")
+
+    # 3. 扫描文件系统，补充数据库中缺失的章节
+    chapters_dir = kernel._data_dir / project_id / "chapters"
+    file_only_chapters = []
+    if chapters_dir.exists():
+        pattern = re.compile(r"^ch_v(\d{2})_(\d{4})\.md$")
+        for md_file in chapters_dir.iterdir():
+            m = pattern.match(md_file.name)
+            if not m:
+                continue
+            vol_num = int(m.group(1))
+            ch_num = int(m.group(2))
+            key = f"{vol_num}_{ch_num}"
+            if key in db_keys:
+                continue  # 数据库已有，跳过
+            # 文件系统有但数据库没有，补充元数据
+            try:
+                content = md_file.read_text(encoding="utf-8")
+                file_only_chapters.append({
+                    "id": f"ch_v{vol_num:02d}_{ch_num:04d}",
+                    "project_id": project_id,
+                    "chapter_number": ch_num,
+                    "volume_number": vol_num,
+                    "title": f"第{ch_num}章",
+                    "content": None,  # 列表接口不含正文
+                    "word_count": len(content),
+                    "ai_score": 0,
+                    "created_at": "",
+                })
+            except Exception:
+                pass
+
+    # 4. 合并并排序
+    all_chapters = db_chapters + file_only_chapters
+    all_chapters.sort(key=lambda c: (c.get("volume_number", 1), c.get("chapter_number", 0)))
+    return all_chapters
 
 
 @router.delete("/api/v1/projects/{project_id}/chapters/{ch_num}")
@@ -386,12 +485,27 @@ def _parse_json(content: str) -> dict:
     try:
         return json.loads(content)
     except json.JSONDecodeError:
-        m = re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
+        # 提取 ```json ... ``` 代码块（贪婪匹配）
+        m = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', content)
         if m:
             try:
                 return json.loads(m.group(1))
             except json.JSONDecodeError:
                 pass
+        # 尝试找第一个JSON对象
+        start = content.find('{')
+        if start >= 0:
+            depth = 0
+            for i in range(start, len(content)):
+                if content[i] == '{':
+                    depth += 1
+                elif content[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(content[start:i + 1])
+                        except json.JSONDecodeError:
+                            break
     return {}
 
 

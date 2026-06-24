@@ -51,6 +51,7 @@ class PipelineContext:
     # 组装后的上下文
     outline_node: dict[str, Any] | None = None
     rag_results: list[dict[str, Any]] = field(default_factory=list)
+    writing_tips: list[dict[str, Any]] = field(default_factory=list)
     active_foreshadows: list[dict[str, Any]] = field(default_factory=list)
     relevant_facts: list[dict[str, Any]] = field(default_factory=list)
     style_profile: dict[str, Any] = field(default_factory=dict)
@@ -150,6 +151,96 @@ class OrchestrationEngine:
     # Pipeline Stages
     # ------------------------------------------------------------------
 
+    # 篇幅 → 方法论包映射
+    _METHOD_PACKS = {
+        "short": "short-story-writing",
+        "medium": "novel-writing",
+        "long": "novel-templates",
+        "extra_long": "novel-templates",
+    }
+    # 通用写作技巧包（所有篇幅都注入）
+    _UNIVERSAL_PACKS = ["writing-master", "writing-tutorial", "writing-workflow", "novel-writing-skills"]
+
+    # 题材标签 → genre_skills 目录映射
+    _GENRE_SKILL_MAP = {
+        "都市": "都市职场", "职场": "都市职场",
+        "悬疑": "悬疑推理", "推理": "悬疑推理",
+        "都市悬疑": "都市悬疑",
+        "科幻": "AI科幻", "AI": "AI科幻",
+        "太空": "太空科幻",
+        "赛博朋克": "赛博庞克", "赛博": "赛博庞克",
+        "言情": "女频爱情", "女频": "女频爱情", "爱情": "女频爱情",
+        "异能": "异能志怪", "志怪": "异能志怪", "灵异": "异能志怪",
+    }
+
+    async def _load_method_pack(self, kernel: Any, project_id: str) -> list[dict[str, Any]]:
+        """根据项目篇幅加载方法论包 + 通用写作技巧包 + 题材技能包."""
+        try:
+            from pathlib import Path
+            # 获取项目信息
+            length = "long"
+            genre_tags: list[str] = []
+            if kernel.db:
+                meta = await kernel.db.get_project(project_id)
+                if meta:
+                    length = meta.get("length", "long")
+                    import json
+                    tags_raw = meta.get("genre_tags", "[]")
+                    genre_tags = json.loads(tags_raw) if isinstance(tags_raw, str) else tags_raw
+
+            results = []
+            # 篇幅方法论包
+            pack_name = self._METHOD_PACKS.get(length, "novel-templates")
+            results.extend(self._read_pack_content(pack_name))
+            # 通用写作技巧包
+            for name in self._UNIVERSAL_PACKS:
+                results.extend(self._read_pack_content(name))
+            # 题材技能包
+            results.extend(self._load_genre_skills(genre_tags))
+            return results
+        except Exception:
+            return []
+
+    @staticmethod
+    def _load_genre_skills(genre_tags: list[str]) -> list[dict[str, Any]]:
+        """根据题材标签加载 genre_skills 内容."""
+        from pathlib import Path
+        loaded_dirs = set()
+        results = []
+        for tag in genre_tags:
+            dir_name = OrchestrationEngine._GENRE_SKILL_MAP.get(tag)
+            if not dir_name or dir_name in loaded_dirs:
+                continue
+            loaded_dirs.add(dir_name)
+            skill_dir = Path("knowledge_base/genre_skills") / dir_name
+            if not skill_dir.exists():
+                continue
+            # 读取创建小说正文 prompt（核心题材规则）
+            prompt_file = skill_dir / ".github" / "prompts" / "创建小说正文.prompt.md"
+            if prompt_file.exists():
+                text = prompt_file.read_text(encoding="utf-8").strip()
+                if text:
+                    # 截取关键部分（跳过 YAML front matter）
+                    if "---" in text[1:]:
+                        parts = text.split("---", 2)
+                        text = parts[2].strip() if len(parts) > 2 else text
+                    results.append({"content": text[:2000], "category": "writing_tip", "metadata": {"source": f"genre:{dir_name}", "file": "创建小说正文.prompt.md"}})
+        return results
+
+    @staticmethod
+    def _read_pack_content(pack_name: str) -> list[dict[str, Any]]:
+        """读取单个知识包的 .md 内容."""
+        from pathlib import Path
+        pack_dir = Path("knowledge_base/packs") / pack_name / "content"
+        if not pack_dir.exists():
+            return []
+        results = []
+        for f in sorted(pack_dir.glob("*.md")):
+            text = f.read_text(encoding="utf-8").strip()
+            if text:
+                results.append({"content": text, "category": "writing_tip", "metadata": {"source": f"pack:{pack_name}", "file": f.name}})
+        return results
+
     async def _assemble_context(self, ctx: PipelineContext) -> None:
         """组装章节上下文."""
         kernel = self._kernel
@@ -180,6 +271,24 @@ class OrchestrationEngine:
             ctx.rag_results = rag
         except Exception:
             pass
+
+        # 写作技巧检索（知识包）
+        try:
+            node_summary = ""
+            if ctx.outline_node:
+                node_summary = ctx.outline_node.get("summary", "")
+            tip_query = node_summary or f"第{ctx.chapter_number}章写作技巧"
+            tips = await kernel.rag_retrieve(
+                query=tip_query,
+                project_id=ctx.project_id,
+                top_k=3,
+                categories=["writing_tip"],
+            )
+            # 按篇幅注入方法论包
+            method_tips = await self._load_method_pack(kernel, ctx.project_id)
+            ctx.writing_tips = method_tips + tips
+        except Exception:
+            ctx.writing_tips = []
 
         # 活跃伏笔（从文件读取，ContextManager 中无持久化数据）
         try:
@@ -232,6 +341,7 @@ class OrchestrationEngine:
             "characters": await kernel.context().get(f"project:{ctx.project_id}", "characters", {}),
             "previous_chapters_summary": prev_summary,
             "rag_results": ctx.rag_results,
+            "writing_tips": ctx.writing_tips,
             "active_foreshadows": ctx.active_foreshadows,
             "consistency_ledger": ctx.consistency_ledger,
         }

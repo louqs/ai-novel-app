@@ -151,10 +151,35 @@ class ConsistencyCheckerPlugin(IQualityGate):
         )
 
         import json
+        import re
+        raw = result["content"]
         try:
-            data = json.loads(result["content"])
+            data = json.loads(raw)
             return data.get("facts", [])
         except json.JSONDecodeError:
+            # 提取 ```json ... ``` 代码块
+            match = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', raw)
+            if match:
+                try:
+                    data = json.loads(match.group(1))
+                    return data.get("facts", [])
+                except json.JSONDecodeError:
+                    pass
+            # 尝试找第一个JSON对象
+            start = raw.find('{')
+            if start >= 0:
+                depth = 0
+                for i in range(start, len(raw)):
+                    if raw[i] == '{':
+                        depth += 1
+                    elif raw[i] == '}':
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                data = json.loads(raw[start:i + 1])
+                                return data.get("facts", [])
+                            except json.JSONDecodeError:
+                                break
             return []
 
     # ------------------------------------------------------------------

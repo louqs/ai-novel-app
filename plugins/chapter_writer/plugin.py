@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -789,13 +790,17 @@ class ChapterWriterPlugin:
         if character_moments:
             increment.character_reveal = "; ".join(character_moments[:2])
 
-        # 伏笔信息：从大纲节点中提取
+        # 伏笔信息：从大纲节点中提取（清理掉 fs_id 前缀）
+        import re
         foreshadow_plants = chapter_node.get("foreshadow_plants", [])
         foreshadow_payoffs = chapter_node.get("foreshadow_payoffs", [])
         if foreshadow_plants:
-            increment.foreshadow_plant = ", ".join(foreshadow_plants[:3])
+            # 清理 [fs_xxx] 前缀，只保留描述内容
+            clean_plants = [re.sub(r'\[fs_\w+\]\s*', '', p).strip() for p in foreshadow_plants if p]
+            increment.foreshadow_plant = ", ".join(clean_plants[:3])
         if foreshadow_payoffs:
-            increment.foreshadow_payoff = ", ".join(foreshadow_payoffs[:3])
+            clean_payoffs = [re.sub(r'\[fs_\w+\]\s*', '', p).strip() for p in foreshadow_payoffs if p]
+            increment.foreshadow_payoff = ", ".join(clean_payoffs[:3])
 
         # 保存到上下文
         ctx = self._kernel.context()
@@ -966,7 +971,7 @@ class ChapterWriterPlugin:
         project_id = context.get("project_id", "")
         if project_id and not revision_instructions:
             try:
-                await self._extract_and_save_foreshadows(project_id, content, ch_num)
+                await self._extract_and_save_foreshadows(project_id, content, ch_num, vol_num)
             except Exception as exc:
                 logger.warning("伏笔提取失败", chapter=ch_num, error=str(exc))
 
@@ -983,6 +988,7 @@ class ChapterWriterPlugin:
         project_id: str,
         chapter_content: str,
         chapter_num: int,
+        volume_number: int = 1,
     ) -> None:
         """提取伏笔并保存到文件."""
         try:
@@ -998,26 +1004,77 @@ class ChapterWriterPlugin:
         except (FileNotFoundError, json.JSONDecodeError):
             existing = {"project_id": project_id, "entries": {}}
 
-        # 提取新伏笔
+        # 从大纲读取本章的伏笔计划（foreshadow_plants + foreshadow_payoffs）
+        outline_foreshadows = []
+        try:
+            if self._kernel.db:
+                settings = await self._kernel.db.get_settings(project_id)
+                progress = settings.get("progress", {})
+                for vol in progress.get("volumes", []):
+                    if vol.get("volume_number") == volume_number:
+                        for ch in vol.get("chapters", []):
+                            if ch.get("chapter_number") == chapter_num:
+                                plants = ch.get("foreshadow_plants", [])
+                                payoffs = ch.get("foreshadow_payoffs", [])
+                                if plants:
+                                    outline_foreshadows.append({
+                                        "chapter": chapter_num,
+                                        "plants": plants,
+                                        "payoffs": payoffs,
+                                    })
+                                break
+                        break
+        except Exception:
+            pass
+
+        # 提取新伏笔（传入大纲伏笔计划作为参考）
         result = await fm.instance.extract_foreshadows(
             chapter_content, chapter_num, existing
         )
 
         entries = existing.get("entries", {})
 
-        # 添加新伏笔
+        # 从大纲中获取本章的 foreshadow_payoffs（计划在本章回收的伏笔描述）
+        chapter_payoffs = []
+        try:
+            if self._kernel.db:
+                settings = await self._kernel.db.get_settings(project_id)
+                progress = settings.get("progress", {})
+                for vol in progress.get("volumes", []):
+                    if vol.get("volume_number") == volume_number:
+                        for ch in vol.get("chapters", []):
+                            if ch.get("chapter_number") == chapter_num:
+                                chapter_payoffs = ch.get("foreshadow_payoffs", [])
+                                break
+                        break
+        except Exception:
+            pass
+
+        # 添加新伏笔（关联大纲中的回收计划）
         for fs in result.get("new_foreshadows", []):
             fs_id = f"fs_{uuid.uuid4().hex[:8]}"
+            desc = fs.get("description", "")
+
+            # 尝试匹配大纲中的 foreshadow_payoffs
+            matched_payoffs = []
+            for outline_fs in outline_foreshadows:
+                for plant_desc in outline_fs.get("plants", []):
+                    # 如果描述有关键词重叠，关联该伏笔的回收计划
+                    if plant_desc and any(kw in desc for kw in plant_desc.split()[:3] if len(kw) > 1):
+                        matched_payoffs = outline_fs.get("payoffs", [])
+                        break
+
             entries[fs_id] = {
                 "foreshadow_id": fs_id,
                 "type": fs.get("type", "plot_twist"),
-                "description": fs.get("description", ""),
+                "description": desc,
                 "planted_chapter": chapter_num,
                 "involved_characters": fs.get("involved_characters", []),
                 "involved_items": fs.get("involved_items", []),
                 "status": "planted",
                 "priority": fs.get("priority", 1),
                 "building_chapters": [chapter_num],
+                "foreshadow_payoffs": matched_payoffs,
             }
 
         # 更新推进的伏笔
@@ -1106,11 +1163,26 @@ class ChapterWriterPlugin:
             import re
             content = result["content"]
             # 尝试解析 JSON
-            match = re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
+            match = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', content)
             if match:
                 data = json.loads(match.group(1))
             else:
-                data = json.loads(content)
+                # 尝试找第一个JSON对象
+                start = content.find('{')
+                if start >= 0:
+                    depth = 0
+                    for i in range(start, len(content)):
+                        if content[i] == '{':
+                            depth += 1
+                        elif content[i] == '}':
+                            depth -= 1
+                            if depth == 0:
+                                data = json.loads(content[start:i + 1])
+                                break
+                    else:
+                        data = json.loads(content)
+                else:
+                    data = json.loads(content)
 
             # 更新图谱
             chars = data.get("characters", [])
@@ -1370,8 +1442,18 @@ class ChapterWriterPlugin:
         is_climax = chapter_node.get("is_climax", False)
         is_hook = chapter_node.get("is_hook_point", False)
 
+        # 判断是否多卷（用于决定是否显示卷号）
+        progress = settings_data.get("meta", {}).get("progress", {}) if isinstance(settings_data.get("meta"), dict) else {}
+        if not progress:
+            progress = settings_data.get("progress", {}) if isinstance(settings_data, dict) else {}
+        volumes_list = progress.get("volumes", []) if isinstance(progress, dict) else []
+        is_multi_volume = len(volumes_list) > 1
+
         parts.append("## 章节信息")
-        parts.append(f"- 第{vol_num}卷 第{ch_num}章: {title}")
+        if is_multi_volume:
+            parts.append(f"- 第{vol_num}卷 第{ch_num}章: {title}")
+        else:
+            parts.append(f"- 第{ch_num}章: {title}")
         if summary:
             parts.append(f"- 本章概要: {summary}")
         if key_events:
@@ -1459,6 +1541,16 @@ class ChapterWriterPlugin:
                     parts.append(f"- Ch{iss.get('ch','?')}: {iss.get('issue','')}")
 
         # RAG 上下文
+        # 写作技巧（知识包）
+        writing_tips = context.get("writing_tips", [])
+        if writing_tips:
+            parts.append("\n## 写作参考")
+            for t in writing_tips:
+                content = t.get("content", "")[:300]
+                if content:
+                    parts.append(f"- {content}")
+
+        # RAG 上下文（项目数据）
         rag_results = context.get("rag_results", [])
         if rag_results:
             parts.append("\n## 参考上下文")
@@ -1504,10 +1596,11 @@ class ChapterWriterPlugin:
         parts.append("- 对话用引号包裹，重要的内心独白可用 *斜体*")
         parts.append("- 场景切换用 --- 分隔线")
         parts.append("- 不要输出章节标题（系统会自动添加 frontmatter）")
+        parts.append("- 严禁输出任何元数据标记，如(章尾钩子)、(卷末钩子)、(倒计时)等，这些是写作技巧提示，不是正文内容")
         parts.append(f"- 🔴 目标字数: {target_words}字（允许范围: {words_min}-{words_max}字，严禁低于{words_min}字）")
         if platform == "fanqie":
             parts.append("- 段落要短（≤5行），对话单独成行")
-        parts.append("- 章尾必须有钩子")
+        parts.append("- 章尾必须有钩子（直接写在正文中，不要加任何标记）")
 
         return "\n".join(parts)
 
@@ -1517,15 +1610,32 @@ class ChapterWriterPlugin:
 
     @staticmethod
     def _clean_chapter_content(content: str, ch_num: int, title: str) -> str:
-        """去除 LLM 重复输出的章节标题。"""
+        """去除 LLM 重复输出的章节标题和元数据标记。"""
         import re
 
+        # 去除章节标题
         patterns = [
+            rf"^第\s*\d+\s*卷\s*第\s*{ch_num}\s*[章回].*?\n",  # "第1卷 第1章 xxx"
             rf"^第\s*{ch_num}\s*[章回].*?\n",  # "第1章 xxx"
             rf"^{re.escape(title)}\s*\n",  # 标题本身
         ]
         for pat in patterns:
             content = re.sub(pat, "", content, count=1, flags=re.MULTILINE)
+
+        # 去除元数据标记（如 "（章尾钩子）"、"（卷末钩子+倒计时）" 等）
+        # 匹配括号内包含特定关键词的内容
+        meta_keywords = r'钩子|倒计时|伏笔|悬念|高潮|反转|揭秘|卷末|章首|章尾|卷首|名场面|信息增量|情感线|支线'
+        content = re.sub(r'[（(][^）)]*(?:' + meta_keywords + r')[^）)]*[）)]', '', content)
+
+        # 去除可能的变体：用中文方括号、书名号等
+        content = re.sub(r'[【\[][^】\]]*(?:' + meta_keywords + r')[^】\]]*[】\]]', '', content)
+
+        # 去除单独成行的标记（如 "---\n（章尾钩子）\n"）
+        content = re.sub(r'\n[（(【\[][^\n）)】\]]*[）)】\]]\s*\n', '\n', content)
+
+        # 去除可能残留的空行（连续3个以上换行变成2个）
+        content = re.sub(r'\n{3,}', '\n\n', content)
+
         return content.strip()
 
     @staticmethod

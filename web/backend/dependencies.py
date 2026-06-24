@@ -77,6 +77,9 @@ class AppState:
         # 7. 加载所有插件
         await self._load_all_plugins()
 
+        # 8. 恢复文件系统中存在但数据库中缺失的章节数据
+        await self._recover_chapters_from_files()
+
         self._initialized = True
 
     async def shutdown(self) -> None:
@@ -158,6 +161,105 @@ class AppState:
                 logger.info("知识包已就绪", count=len(local))
         except Exception:
             pass
+
+    async def _recover_chapters_from_files(self) -> None:
+        """启动时扫描文件系统，将数据库中缺失的章节恢复到数据库（仅执行一次）。
+
+        解决的问题：部分章节只保存到了文件系统（如数据库写入失败），
+        重启后 list_chapters API 只查数据库，导致这些章节在大纲树上不显示。
+
+        使用标记文件记录恢复是否已完成，避免每次启动都扫描。
+        """
+        if not self.database or not self.kernel:
+            return
+
+        from core.logging_config import get_logger
+        import re
+        logger = get_logger(__name__)
+
+        # 检查是否已执行过恢复（使用标记文件）
+        marker_file = self.kernel._data_dir / ".chapter_recovery_done"
+        if marker_file.exists():
+            return  # 已执行过，跳过
+
+        data_dir = self.kernel._data_dir
+        if not data_dir.exists():
+            return
+
+        recovered_count = 0
+        pattern = re.compile(r"^ch_v(\d{2})_(\d{4})\.md$")
+
+        try:
+            # 遍历所有项目目录
+            for proj_dir in data_dir.iterdir():
+                if not proj_dir.is_dir() or not proj_dir.name.startswith("proj_"):
+                    continue
+
+                project_id = proj_dir.name
+                chapters_dir = proj_dir / "chapters"
+                if not chapters_dir.exists():
+                    continue
+
+                # 获取数据库中已有的章节
+                db_chapters = await self.database.list_chapters(project_id)
+                db_keys = set()
+                for ch in db_chapters:
+                    vol = ch.get("volume_number", 1)
+                    num = ch.get("chapter_number", 0)
+                    db_keys.add(f"{vol}_{num}")
+
+                # 扫描文件系统中的章节文件
+                for md_file in chapters_dir.iterdir():
+                    m = pattern.match(md_file.name)
+                    if not m:
+                        continue
+
+                    vol_num = int(m.group(1))
+                    ch_num = int(m.group(2))
+                    key = f"{vol_num}_{ch_num}"
+
+                    if key in db_keys:
+                        continue  # 数据库已有，跳过
+
+                    # 文件系统有但数据库没有，恢复到数据库
+                    try:
+                        content = md_file.read_text(encoding="utf-8")
+                        cid = f"ch_v{vol_num:02d}_{ch_num:04d}"
+                        await self.database.save_chapter(
+                            cid, project_id, ch_num,
+                            f"第{ch_num}章", content,
+                            volume=vol_num,
+                            auto_snapshot=False,  # 恢复时不需要快照
+                            snapshot_source="recover",
+                            snapshot_summary="启动时从文件系统恢复",
+                        )
+                        recovered_count += 1
+                        logger.info(
+                            "恢复章节到数据库",
+                            project_id=project_id,
+                            chapter_number=ch_num,
+                            volume_number=vol_num,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "恢复章节失败",
+                            project_id=project_id,
+                            file=md_file.name,
+                            error=str(e),
+                        )
+
+            # 无论是否有章节被恢复，都创建标记文件，避免下次启动再扫描
+            try:
+                marker_file.write_text("done", encoding="utf-8")
+            except Exception:
+                pass
+
+            if recovered_count > 0:
+                logger.info("章节数据恢复完成", recovered_count=recovered_count)
+            else:
+                logger.debug("章节数据无需恢复")
+        except Exception as e:
+            logger.warning("章节数据恢复过程出错", error=str(e))
 
 
 # 全局单例

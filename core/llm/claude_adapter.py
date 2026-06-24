@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 from tenacity import (
@@ -53,6 +53,7 @@ class ClaudeAdapter(BaseLLMAdapter):
         api_key: str,
         *,
         base_url: str | None = None,
+        default_model: str = "claude-sonnet-4-6-20250514",
         timeout: float = 120.0,
         max_retries: int = 3,
     ) -> None:
@@ -60,6 +61,7 @@ class ClaudeAdapter(BaseLLMAdapter):
             raise ImportError("需要安装 anthropic 包: pip install anthropic")
 
         self._api_key = api_key
+        self._default_model = default_model
         self._timeout = timeout
         self._max_retries_api = max_retries
 
@@ -142,10 +144,50 @@ class ClaudeAdapter(BaseLLMAdapter):
     async def _health_check(self) -> None:
         """发送一个最小请求验证 API 可用."""
         await self._client.messages.create(
-            model="claude-haiku-4-5-20250514",
+            model=self._default_model,
             max_tokens=1,
             messages=[{"role": "user", "content": "ping"}],
         )
+
+    async def stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model: str = "",
+        max_tokens: int = 4096,
+        temperature: float | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        """流式生成——逐 token yield 文本."""
+        model_name = model or self._default_model
+
+        # 提取 system 消息 (如有)
+        system_prompt = ""
+        user_messages = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                system_prompt = msg.get("content", "")
+            else:
+                user_messages.append(msg)
+
+        user_messages = self._convert_messages(user_messages)
+
+        try:
+            async with self._client.messages.stream(
+                model=model_name,
+                system=system_prompt if system_prompt else anthropic.NOT_GIVEN,
+                messages=user_messages,
+                max_tokens=max_tokens,
+                temperature=temperature if temperature is not None else anthropic.NOT_GIVEN,
+            ) as stream:
+                async for text in stream.text_stream:
+                    yield text
+        except anthropic.APIError as e:
+            raise LLMError(
+                f"Claude API 流式错误: {e.message}",
+                provider="claude",
+                status_code=getattr(e, "status_code", None),
+            ) from e
 
     @staticmethod
     def _convert_messages(messages: list[dict[str, str]]) -> list[dict[str, Any]]:

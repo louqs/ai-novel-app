@@ -75,7 +75,21 @@
       "Bash(timeout 30 python -c ' *)",
       "Bash(python -m pytest tests/ -v -m smoke --timeout=30)",
       "Bash(python -m pytest tests/ -v -m smoke)",
-      "Bash(python -m pytest tests/ -v -k \"anti_ai or quality\")"
+      "Bash(python -m pytest tests/ -v -k \"anti_ai or quality\")",
+      "Bash(python -c \"from web.backend.main import app; print\\('OK'\\)\")",
+      "Bash(netstat -ano)",
+      "Bash(taskkill /F /PID 12388)",
+      "Bash(taskkill /F /PID 2512)",
+      "Bash(taskkill /F /PID 3860)",
+      "Bash(python -c \"import sqlite3; conn = sqlite3.connect\\('data/novel.db'\\); cursor = conn.cursor\\(\\); cursor.execute\\('SELECT name, type, base_url, default_model FROM providers'\\); print\\(cursor.fetchall\\(\\)\\); conn.close\\(\\)\")",
+      "Bash(python -c \"import sqlite3; conn = sqlite3.connect\\('data/novel.db'\\); cursor = conn.cursor\\(\\); cursor.execute\\('SELECT tier, provider, model FROM model_settings'\\); print\\(cursor.fetchall\\(\\)\\); conn.close\\(\\)\")",
+      "Bash(.venv\\\\Scripts\\\\python tests\\\\test_concurrent.py)",
+      "Bash(.venv/Scripts/python.exe tests/test_concurrent.py)",
+      "Bash(.venv/Scripts/python.exe -c \"from plugins.chapter_writer.plugin import create_plugin; print\\('OK'\\)\")",
+      "Bash(python -c \"from plugins.pipeline_editor.plugin import PipelineEditorPlugin; print\\('Plugin import OK'\\)\")",
+      "Bash(sqlite3 *)",
+      "Bash(python3 *)",
+      "Bash(python -m pytest tests/ -v -m smoke --tb=short)"
     ]
   }
 }

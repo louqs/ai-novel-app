@@ -131,23 +131,43 @@ async function testModel(name) {
     } catch(e) { toast('测试失败', 'error'); }
 }
 
+// 协议类型切换时更新 placeholder
+function onTypeChange(prefix) {
+    var type = document.getElementById(prefix + '-type').value;
+    var urlInput = document.getElementById(prefix + '-url');
+    var modelInput = document.getElementById(prefix + '-model');
+    if (type === 'claude') {
+        urlInput.placeholder = '留空使用官方 API，或填自定义地址';
+        modelInput.placeholder = 'claude-sonnet-4-6-20250514';
+    } else if (type === 'ollama') {
+        urlInput.placeholder = 'http://localhost:11434';
+        modelInput.placeholder = 'llama3';
+    } else {
+        urlInput.placeholder = 'https://api.deepseek.com';
+        modelInput.placeholder = 'deepseek-chat';
+    }
+}
+
 async function addModel() {
     var name = document.getElementById('new-name').value.trim();
+    var ptype = document.getElementById('new-type').value;
     var baseUrl = document.getElementById('new-url').value.trim();
     var apiKey = document.getElementById('new-key').value.trim();
     var model = document.getElementById('new-model').value.trim();
-    if (!name || !baseUrl) { alert('请填写名称和 URL'); return; }
+    if (!name) { alert('请填写名称'); return; }
     if (!model) { alert('请填写默认模型'); return; }
+    // Claude 官方 API 不需要 base_url
+    if (ptype !== 'claude' && !baseUrl) { alert('请填写 Base URL'); return; }
     try {
         var resp = await fetch('/api/v1/models/providers', {method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({name: name, type: 'openai_compatible', base_url: baseUrl, api_key: apiKey, default_model: model, models: [model]})});
+            body: JSON.stringify({name: name, type: ptype, base_url: baseUrl, api_key: apiKey, default_model: model, models: [model]})});
         if (!resp.ok) {
             var err = await resp.json().catch(function() { return {detail: '未知错误'}; });
             toast('添加失败: ' + (err.detail || resp.status), 'error');
             return;
         }
         // 立即更新本地数据，不等 loadModels
-        _providers[name] = {name: name, type: 'openai_compatible', base_url: baseUrl, default_model: model, models: [model], healthy: null};
+        _providers[name] = {name: name, type: ptype, base_url: baseUrl, default_model: model, models: [model], healthy: null};
         _renderModelList();
         _refreshTierDropdowns();
         toast('已添加', 'success');
@@ -164,37 +184,42 @@ function editModel(name) {
     _editModelName = name;
     var p = _providers[name] || {};
     document.getElementById('edit-original-name').value = name;
+    document.getElementById('edit-original-type').value = p.type || 'openai_compatible';
+    document.getElementById('edit-type').value = p.type || 'openai_compatible';
     document.getElementById('edit-name').value = name;
     document.getElementById('edit-url').value = p.base_url || '';
     document.getElementById('edit-key').value = '';
     document.getElementById('edit-model').value = p.default_model || (p.models || [])[0] || '';
+    onTypeChange('edit');
     document.getElementById('edit-modal').style.display = 'block';
 }
 function closeEditModal() { document.getElementById('edit-modal').style.display = 'none'; _editModelName = null; }
 async function saveEdit() {
     if (!_editModelName) return;
     var newName = document.getElementById('edit-name').value.trim();
+    var ptype = document.getElementById('edit-type').value;
     var baseUrl = document.getElementById('edit-url').value.trim();
     var apiKey = document.getElementById('edit-key').value.trim();
     var model = document.getElementById('edit-model').value.trim();
     if (!newName) { alert('名称不能为空'); return; }
 
-    // 名称改变了 → 删除旧的，创建新的
-    if (newName !== _editModelName) {
+    // 名称或类型改变了 → 删除旧的，创建新的
+    var origType = document.getElementById('edit-original-type').value;
+    if (newName !== _editModelName || ptype !== origType) {
         try {
             await fetch('/api/v1/models/providers/' + encodeURIComponent(_editModelName), {method: 'DELETE'});
             var resp = await fetch('/api/v1/models/providers', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name: newName, type: 'openai_compatible', base_url: baseUrl, api_key: apiKey, default_model: model, models: model ? [model] : []})});
+                body: JSON.stringify({name: newName, type: ptype, base_url: baseUrl, api_key: apiKey, default_model: model, models: model ? [model] : []})});
             if (!resp.ok) {
                 var err = await resp.json().catch(function() { return {detail: '未知错误'}; });
-                toast('重命名失败: ' + (err.detail || resp.status), 'error');
+                toast('保存失败: ' + (err.detail || resp.status), 'error');
                 return;
             }
             delete _providers[_editModelName];
-            _providers[newName] = {name: newName, type: 'openai_compatible', base_url: baseUrl, default_model: model, models: model ? [model] : [], healthy: null};
+            _providers[newName] = {name: newName, type: ptype, base_url: baseUrl, default_model: model, models: model ? [model] : [], healthy: null};
             _renderModelList(); _refreshTierDropdowns();
-            closeEditModal(); toast('已重命名并更新', 'success');
-        } catch(e) { toast('重命名失败: ' + e.message, 'error'); }
+            closeEditModal(); toast('已保存', 'success');
+        } catch(e) { toast('保存失败: ' + e.message, 'error'); }
         return;
     }
 

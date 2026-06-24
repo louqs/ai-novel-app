@@ -57,6 +57,19 @@ class NovelLength(str, Enum):
         lo, hi = self.chapter_range(words_per_chapter, min_words, max_words)
         return (lo + hi) // 2
 
+    def default_volumes(self, total_chapters: int) -> int:
+        """根据篇幅和章节数计算默认分卷数.
+
+        Returns:
+            1 = 不分卷；>=2 = 分卷数
+        """
+        if self in (NovelLength.SHORT, NovelLength.MEDIUM):
+            return 1  # 短篇、中篇默认不分卷
+        if self == NovelLength.LONG:
+            return 4  # 长篇默认4卷
+        # 超长篇默认6卷，最多10卷
+        return 6
+
 
 class Platform(str, Enum):
     """投稿平台."""

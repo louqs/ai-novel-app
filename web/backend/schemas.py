@@ -36,6 +36,8 @@ class ProjectCreate(BaseModel):
     one_liner: str = Field(default="")
     length: str = Field(default="medium")
     target_words_per_chapter: int = Field(default=3000, ge=1000, le=10000)
+    min_words: int | None = Field(default=None, ge=1000)
+    max_words: int | None = Field(default=None, ge=1000, le=7_000_000)
 
 
 class ProjectUpdate(BaseModel):
@@ -46,6 +48,8 @@ class ProjectUpdate(BaseModel):
     status: str | None = None
     length: str | None = None
     target_words_per_chapter: int | None = None
+    min_words: int | None = None
+    max_words: int | None = None
     style_bible: str | None = None
 
 

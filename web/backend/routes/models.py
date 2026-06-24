@@ -179,38 +179,55 @@ async def switch_all_to_provider(data: SwitchModelRequest):
 async def add_provider(data: AddProviderRequest):
     """动态添加新 Provider——立即生效，无需重启。
 
-    通过 API 动态注册 OpenAI 兼容 Provider。
-    持久化需要手动添加到 config/default.yaml 的 providers 列表。
+    支持类型: openai_compatible, claude, ollama
     """
     kernel = await get_kernel()
     registry = kernel.model_registry
     if not registry:
-        # 需要从配置创建
         raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="请先通过配置初始化模型注册中心")
 
     api_key = data.api_key
     if not api_key and data.api_key_env:
         api_key = os.getenv(data.api_key_env, "")
 
-    if not api_key:
+    if not api_key and data.type != "ollama":
         raise HTTPException(
             status_code=HTTP_400_BAD_REQUEST,
             detail="需要提供 api_key 或设置环境变量",
         )
 
-    adapter = OpenAICompatibleAdapter(
-        name=data.name, base_url=data.base_url,
-        api_key=api_key, default_model=data.default_model,
-    )
+    ptype = data.type or "openai_compatible"
+
+    try:
+        if ptype == "claude":
+            from core.llm.claude_adapter import ClaudeAdapter
+            adapter = ClaudeAdapter(api_key=api_key, base_url=data.base_url or None, default_model=data.default_model)
+            adapter.provider_name = data.name
+        elif ptype == "ollama":
+            from core.llm.ollama_adapter import OllamaAdapter
+            adapter = OllamaAdapter(base_url=data.base_url or "http://localhost:11434", default_model=data.default_model)
+            adapter.provider_name = data.name
+        else:
+            # openai_compatible
+            adapter = OpenAICompatibleAdapter(
+                name=data.name, base_url=data.base_url,
+                api_key=api_key, default_model=data.default_model,
+            )
+    except ImportError as e:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=f"缺少依赖: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=f"创建适配器失败: {str(e)}")
+
     registry.register_adapter(adapter)
     # 持久化到数据库
     if kernel.db:
-        await kernel.db.save_provider(data.name, "openai_compatible", data.base_url, api_key, data.default_model, data.models)
+        await kernel.db.save_provider(data.name, ptype, data.base_url, api_key, data.default_model, data.models)
 
     return {
         "status": "ok",
-        "message": f"Provider '{data.name}' 已添加（已持久化，重启不丢）",
+        "message": f"Provider '{data.name}' ({ptype}) 已添加（已持久化，重启不丢）",
         "provider": data.name,
+        "type": ptype,
     }
 
 

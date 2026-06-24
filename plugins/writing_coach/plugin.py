@@ -419,12 +419,27 @@ class WritingCoachPlugin:
         try:
             return json.loads(content)
         except json.JSONDecodeError:
-            m = re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
+            # 提取 ```json ... ``` 代码块（贪婪匹配）
+            m = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', content)
             if m:
                 try:
                     return json.loads(m.group(1))
                 except json.JSONDecodeError:
                     pass
+            # 尝试找第一个JSON对象
+            start = content.find('{')
+            if start >= 0:
+                depth = 0
+                for i in range(start, len(content)):
+                    if content[i] == '{':
+                        depth += 1
+                    elif content[i] == '}':
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                return json.loads(content[start:i + 1])
+                            except json.JSONDecodeError:
+                                break
         return {}
 
 

@@ -122,13 +122,35 @@ class ForeshadowManagerPlugin(IQualityGate):
             }
         """
         existing = {}
+        expected_payoffs = []  # 本章计划回收的伏笔
         if existing_foreshadows:
             entries = existing_foreshadows.get("entries", {})
-            existing = {
-                fs_id: {"description": fs.get("description", ""), "status": fs.get("status", "")}
-                for fs_id, fs in entries.items()
-                if isinstance(fs, dict)
-            }
+            for fs_id, fs in entries.items():
+                if not isinstance(fs, dict):
+                    continue
+                existing[fs_id] = {
+                    "description": fs.get("description", ""),
+                    "status": fs.get("status", ""),
+                    "planted_chapter": fs.get("planted_chapter", 0),
+                }
+                # 检查该伏笔是否计划在本章回收
+                payoffs = fs.get("foreshadow_payoffs", [])
+                if payoffs:
+                    for po in payoffs:
+                        try:
+                            if int(po) == chapter_num:
+                                expected_payoffs.append({
+                                    "id": fs_id,
+                                    "description": fs.get("description", ""),
+                                })
+                        except (ValueError, TypeError):
+                            pass
+
+        payoff_hint = ""
+        if expected_payoffs:
+            payoff_hint = "\n\n⚠️ 以下伏笔计划在本章回收，请重点检查是否已回收:\n"
+            for ep in expected_payoffs:
+                payoff_hint += f"- [{ep['id']}] {ep['description']}\n"
 
         prompt = f"""分析以下章节中的伏笔活动:
 
@@ -137,11 +159,12 @@ class ForeshadowManagerPlugin(IQualityGate):
 
 已有伏笔:
 {json.dumps(existing, ensure_ascii=False, indent=2) if existing else "无"}
+{payoff_hint}
 
 请识别:
 1. **新伏笔**: 本章新埋的伏笔
 2. **伏笔推进**: 本章推进/提及了哪些已有伏笔
-3. **伏笔回收**: 本章回收/揭示/引爆了哪些伏笔
+3. **伏笔回收**: 本章回收/揭示/引爆了哪些伏笔（重点关注上面标记的计划回收伏笔）
 
 返回 JSON:
 ```json
@@ -178,12 +201,28 @@ class ForeshadowManagerPlugin(IQualityGate):
             return json.loads(result["content"])
         except json.JSONDecodeError:
             import re
-            match = re.search(r'```(?:json)?\s*([\s\S]*?)```', result["content"])
+            # 提取 ```json ... ``` 代码块（贪婪匹配）
+            match = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', result["content"])
             if match:
                 try:
                     return json.loads(match.group(1))
                 except json.JSONDecodeError:
                     pass
+            # 尝试找第一个JSON对象
+            content = result["content"]
+            start = content.find('{')
+            if start >= 0:
+                depth = 0
+                for i in range(start, len(content)):
+                    if content[i] == '{':
+                        depth += 1
+                    elif content[i] == '}':
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                return json.loads(content[start:i + 1])
+                            except json.JSONDecodeError:
+                                break
             return {"new_foreshadows": [], "advanced": [], "paid": []}
 
     async def get_active_foreshadows(

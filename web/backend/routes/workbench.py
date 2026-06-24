@@ -45,11 +45,21 @@ async def get_outline(project_id: str):
 
 @router.put("/api/v1/projects/{project_id}/outline", response_model=dict)
 async def save_outline(project_id: str, data: dict):
-    """手动保存/更新大纲 — save_outline 自动快照旧版本."""
+    """手动保存/更新大纲 — 保存草稿，不创建版本历史."""
     kernel = await get_kernel()
     from core.generation_service import GenerationService
     gs = GenerationService(kernel)
-    await gs.save_outline(project_id, data, snapshot_source="manual", snapshot_summary="手动保存大纲")
+    # 只保存到 context 和文件，不创建版本历史
+    ns = f"project:{project_id}"
+    await kernel.context().set(ns, "progress", data)
+    import json
+    await kernel.write_project_file(
+        project_id, "progress.json", json.dumps(data, ensure_ascii=False, indent=2),
+    )
+    if kernel.db:
+        settings = await kernel.db.get_settings(project_id) or {}
+        settings["progress"] = data
+        await kernel.db.save_settings(project_id, settings)
     return {"status": "saved"}
 
 
@@ -66,9 +76,8 @@ async def generate_outline(project_id: str):
         if not result.success:
             raise HTTPException(status_code=500, detail=f"大纲生成失败: {result.error[:200]}")
 
-        # 保存（自动快照旧版本）+ 保存新版本到历史
-        await gs.save_outline(project_id, result.progress, snapshot_source="pre_generate", snapshot_summary="生成新大纲前自动快照")
-        await gs.snapshot_outline(project_id, result.progress, source="generate", change_summary="同步生成新大纲")
+        # 保存大纲（save_outline 内部会自动快照旧版本并保存新版本）
+        await gs.save_outline(project_id, result.progress, snapshot_source="generate", snapshot_summary="生成新大纲")
 
         return result.progress
     except HTTPException:
@@ -93,9 +102,20 @@ async def apply_outline(project_id: str, data: dict):
 
         logger.info("应用大纲", project_id=project_id, volumes=len(progress.get("volumes", [])))
 
-        # 保存（自动快照旧版本）+ 保存新版本到历史
-        await gs.save_outline(project_id, progress, snapshot_source="pre_apply", snapshot_summary="应用新大纲前自动快照")
-        await gs.snapshot_outline(project_id, progress, source="apply", change_summary="用户应用大纲方案")
+        # 保存大纲（save_outline 内部会自动快照旧版本并保存新版本）
+        vid = await gs.save_outline(project_id, progress, snapshot_source="apply", snapshot_summary="用户应用大纲方案")
+
+        # 同步大纲伏笔到 foreshadows.json
+        await gs.sync_outline_foreshadows(project_id, progress)
+
+        # 记录当前使用的版本
+        if vid and kernel.db:
+            try:
+                settings = await kernel.db.get_settings(project_id) or {}
+                settings["outline_current_version_id"] = vid
+                await kernel.db.save_settings(project_id, settings)
+            except Exception:
+                pass
 
         total_chs = sum(len(v.get("chapters", [])) for v in progress.get("volumes", []))
         return {"status": "applied", "volumes": len(progress.get("volumes", [])), "chapters": total_chs}
@@ -147,12 +167,18 @@ async def list_chapter_versions(project_id: str, ch_num: int, volume: int = 1):
     vm = VersionManager(kernel.db)
     versions = await vm.list_chapter_versions(project_id, ch_num, volume)
 
-    # 找到当前版本（最近的非 pre_ 来源版本）
+    # 从 settings 读取当前版本指针
     current_version_id = None
-    for v in versions:
-        if v.get("source") not in ("pre_rollback",):
-            current_version_id = v["id"]
-            break  # versions 按 id DESC 排序
+    settings = await kernel.db.get_settings(project_id)
+    key = f"ch_ver_{project_id}_{volume}_{ch_num}"
+    current_version_id = settings.get(key)
+
+    # fallback: 最近的非 pre_ 来源版本
+    if not current_version_id:
+        for v in versions:
+            if v.get("source") not in ("pre_rollback",):
+                current_version_id = v["id"]
+                break
 
     return {"versions": versions, "total": len(versions), "current_version_id": current_version_id}
 
@@ -238,12 +264,18 @@ async def list_outline_versions(project_id: str):
         vm = VersionManager(kernel.db)
         versions = await vm.list_outline_versions(project_id)
 
-        # 找到当前使用的大纲版本（最近的 apply 或 rollback 来源）
+        # 从 settings 读取当前版本指针
         current_version_id = None
-        for v in versions:
-            if v.get("source") in ("apply", "rollback"):
-                current_version_id = v["id"]
-                break  # versions 按 id DESC 排序，第一个就是最新的
+        if kernel.db:
+            settings = await kernel.db.get_settings(project_id)
+            current_version_id = settings.get("outline_current_version_id")
+
+        # fallback: 如果没有指针，找最近的 apply 来源
+        if not current_version_id:
+            for v in versions:
+                if v.get("source") == "apply":
+                    current_version_id = v["id"]
+                    break
 
         logger.info("获取大纲版本列表", project_id=project_id, count=len(versions), current=current_version_id)
         return {"versions": versions, "total": len(versions), "current_version_id": current_version_id}
@@ -378,8 +410,8 @@ async def run_optimize_pipeline(project_id: str, data: dict):
     ch_num = data.get("chapter_num", 0)
     vol_num = data.get("volume_number", 1)
     steps = data.get("steps", ["annotate", "coach", "detect"])
-    ai_threshold = data.get("ai_threshold", 0.3)
-    humanize_mode = data.get("humanize_mode", "standard")
+    ai_threshold = data.get("ai_threshold", 0.15)
+    humanize_mode = data.get("humanize_mode", "unified")
 
     if not ch_num:
         raise HTTPException(status_code=400, detail="需要 chapter_num")
@@ -401,6 +433,22 @@ async def run_optimize_pipeline(project_id: str, data: dict):
 
     platform = await kernel.context().get(f"project:{project_id}", "platform", "fanqie")
 
+    # 获取门禁检查结果：先从内存取，没有则从数据库取
+    gate_issues = []
+    try:
+        from web.backend.routes.stream import _chapter_jobs
+        job_key = f"{project_id}:v{vol_num}:ch{ch_num}"
+        job = _chapter_jobs.get(job_key)
+        if job:
+            gate_issues = job.get("gate_issues", [])
+    except Exception:
+        pass
+    if not gate_issues and kernel.db:
+        try:
+            gate_issues = await kernel.db.get_gate_results(project_id, ch_num, vol_num)
+        except Exception:
+            pass
+
     try:
         plugin = await kernel.get_plugin("pipeline-editor")
         result = await plugin.instance.run_pipeline(
@@ -412,7 +460,19 @@ async def run_optimize_pipeline(project_id: str, data: dict):
             volume_number=vol_num,
             ai_threshold=ai_threshold,
             humanize_mode=humanize_mode,
+            gate_issues=gate_issues,
         )
+        # 优化结果持久化到数据库，避免切换页面丢失
+        if kernel.db and result.get("current_content"):
+            try:
+                await kernel.db.save_optimization_result(
+                    project_id, ch_num, vol_num,
+                    result.get("original", content),
+                    result.get("current_content", ""),
+                    result.get("explanation"),
+                )
+            except Exception:
+                pass
         return result
     except Exception as e:
         import traceback
@@ -438,8 +498,8 @@ async def optimize_text(data: dict):
 
     platform = data.get("platform", "fanqie")
     steps = data.get("steps", ["annotate", "coach", "detect"])
-    ai_threshold = data.get("ai_threshold", 0.3)
-    humanize_mode = data.get("humanize_mode", "standard")
+    ai_threshold = data.get("ai_threshold", 0.15)
+    humanize_mode = data.get("humanize_mode", "unified")
 
     try:
         plugin = await kernel.get_plugin("pipeline-editor")
@@ -485,6 +545,19 @@ async def save_pipeline_result(project_id: str, data: dict):
 
     await kernel.write_project_file(project_id, f"chapters/{chapter_id}.md", content)
     return {"status": "saved", "chapter_id": chapter_id, "word_count": len(content)}
+
+
+@router.get("/api/v1/projects/{project_id}/pipeline/result/{ch_num}")
+async def get_optimization_result(project_id: str, ch_num: int, volume: int = 1):
+    """获取章节的最近一次优化结果."""
+    kernel = await get_kernel()
+    if not kernel.db:
+        return {"found": False}
+    result = await kernel.db.get_optimization_result(project_id, ch_num, volume)
+    if result:
+        result["found"] = True
+        return result
+    return {"found": False}
 
 
 # =============================================================================

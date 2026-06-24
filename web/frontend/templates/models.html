@@ -55,12 +55,23 @@
 <div class="card">
     <h2>添加模型</h2>
     <div class="form-row">
-        <div class="form-group"><label>名称</label><input type="text" id="new-name" placeholder="如 deepseek / qwen"></div>
-        <div class="form-group"><label>Base URL</label><input type="text" id="new-url" placeholder="https://api.deepseek.com/v1"></div>
+        <div class="form-group">
+            <label>协议类型</label>
+            <select id="new-type" onchange="onTypeChange('new')" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px">
+                <option value="openai_compatible">OpenAI 兼容 (DeepSeek/Qwen/Kimi...)</option>
+                <option value="claude">Anthropic Claude</option>
+                <option value="ollama">Ollama 本地模型</option>
+            </select>
+        </div>
+        <div class="form-group"><label>名称</label><input type="text" id="new-name" placeholder="如 deepseek / claude"></div>
     </div>
     <div class="form-row">
+        <div class="form-group"><label>Base URL</label><input type="text" id="new-url" placeholder="https://api.deepseek.com"></div>
         <div class="form-group"><label>API Key</label><input type="password" id="new-key" placeholder="sk-xxx"></div>
+    </div>
+    <div class="form-row">
         <div class="form-group"><label>默认模型</label><input type="text" id="new-model" placeholder="deepseek-chat"></div>
+        <div class="form-group"></div>
     </div>
     <button class="btn btn-primary" onclick="addModel()">添加模型</button>
     <span id="add-msg" class="muted" style="margin-left:10px"></span>
@@ -71,13 +82,25 @@
     <div style="background:var(--surface);margin:100px auto;padding:20px;width:500px;border-radius:8px;">
         <h3>编辑模型</h3>
         <input type="hidden" id="edit-original-name">
+        <input type="hidden" id="edit-original-type">
         <div class="form-row">
+            <div class="form-group">
+                <label>协议类型</label>
+                <select id="edit-type" onchange="onTypeChange('edit')" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px">
+                    <option value="openai_compatible">OpenAI 兼容</option>
+                    <option value="claude">Anthropic Claude</option>
+                    <option value="ollama">Ollama 本地模型</option>
+                </select>
+            </div>
             <div class="form-group"><label>名称</label><input type="text" id="edit-name"></div>
-            <div class="form-group"><label>Base URL</label><input type="text" id="edit-url"></div>
         </div>
         <div class="form-row">
+            <div class="form-group"><label>Base URL</label><input type="text" id="edit-url"></div>
             <div class="form-group"><label>API Key</label><input type="password" id="edit-key" placeholder="留空则不修改"></div>
+        </div>
+        <div class="form-row">
             <div class="form-group"><label>默认模型</label><input type="text" id="edit-model"></div>
+            <div class="form-group"></div>
         </div>
         <div style="margin-top:15px;">
             <button class="btn btn-primary" onclick="saveEdit()">保存</button>

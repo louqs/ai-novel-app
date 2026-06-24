@@ -5,6 +5,25 @@ var LENGTH_MAP = {short:'短篇', medium:'中篇', long:'长篇'};
 var currentProjectId = sessionStorage.getItem('wb_pid') || '';
 var currentChapterNum = parseInt(sessionStorage.getItem('wb_ch') || '0');
 var currentVolumeNum = parseInt(sessionStorage.getItem('wb_vol') || '1');
+
+// 章节标签辅助函数 - 不分卷时隐藏卷号
+function _chapterLabel(vol, ch, title) {
+    var showVol = outlineData && outlineData.volumes && (outlineData.volumes.length > 1 || (outlineData.volumes.length === 1 && outlineData.volumes[0].title));
+    var volPrefix = showVol ? '第' + vol + '卷' : '';
+    return volPrefix + '第' + ch + '章' + (title ? ': ' + title : '');
+}
+
+// ===== 分卷默认值 =====
+function _setDefaultVolumeCount(length) {
+    var sel = document.getElementById('outline-volume-count');
+    if (!sel) return;
+    // 短篇、中篇默认不分卷；长篇、超长篇默认自动分卷
+    if (length === 'short' || length === 'medium') {
+        sel.value = '1';  // 不分卷
+    } else {
+        sel.value = '0';  // 自动分卷
+    }
+}
 var outlineData = null;
 var _chapterAbortCtrl = null;
 var _isGeneratingChapter = false;
@@ -59,7 +78,7 @@ async function _recoverGeneratingTasks() {
             var total = batch.pending.length;
             var remaining = total - batch.idx;
             var msg = '检测到中断的批量生成：已完成' + batch.done + '/' + total + '章，剩余' + remaining + '章待生成';
-            if (cur) msg += '，将从第' + cur.vol + '卷第' + cur.ch + '章「' + (cur.title || '') + '」继续';
+            if (cur) msg += '，将从' + _chapterLabel(cur.vol, cur.ch, cur.title) + '继续';
             toast(msg, 'info', 8000);
             if (batch.done > 0) {
                 for (var i = 0; i < batch.idx; i++) { var p = batch.pending[i]; _markChapterDone(p.vol, p.ch); }
@@ -94,7 +113,8 @@ async function _recoverGeneratingTasks() {
             if (st.status === 'saved') {
                 _clearGenerating(pid, vol, ch);
                 if (pid === currentProjectId) {
-                    toast('第' + vol + '卷第' + ch + '章已生成完成 (' + (st.word_count || '') + '字)', 'success');
+                    var volPrefix = outlineData && outlineData.volumes && (outlineData.volumes.length > 1 || (outlineData.volumes.length === 1 && outlineData.volumes[0].title)) ? '第' + vol + '卷' : '';
+                    toast(volPrefix + '第' + ch + '章已生成完成 (' + (st.word_count || '') + '字)', 'success');
                     if (outlineData) outlineData.volumes.forEach(function(v) { if (v.volume_number === vol) { v.chapters.forEach(function(c) { if (c.chapter_number === ch) c.status = 'completed'; }); } });
                     _renderOutlineTree();
                     if (vol === currentVolumeNum && ch === currentChapterNum) loadChapterContent(ch, vol);
@@ -109,7 +129,7 @@ async function _recoverGeneratingTasks() {
     var details = [];
     trulyGenerating.forEach(function(k) {
         var parts = k.split('|');
-        if (parts.length >= 3) details.push('第' + parts[1] + '卷第' + parts[2] + '章');
+        if (parts.length >= 3) details.push(_chapterLabel(parseInt(parts[1]), parseInt(parts[2])));
     });
     toast('检测到' + trulyGenerating.length + '个进行中的生成任务: ' + details.join('、') + '，正在恢复...', 'info', 8000);
     for (var i = 0; i < trulyGenerating.length; i++) {
@@ -126,7 +146,7 @@ async function _reconnectChapterStream(pid, vol, ch) {
         if (st.status === 'saved') {
             _clearGenerating(pid, vol, ch);
             if (pid === currentProjectId) {
-                toast('第' + vol + '卷第' + ch + '章已生成完成 (' + (st.word_count || '') + '字)', 'success');
+                toast(_chapterLabel(vol, ch) + '已生成完成 (' + (st.word_count || '') + '字)', 'success');
                 // 更新大纲数据并刷新
                 if (outlineData) outlineData.volumes.forEach(function(v) { if (v.volume_number === vol) { v.chapters.forEach(function(c) { if (c.chapter_number === ch) c.status = 'completed'; }); } });
                 _renderOutlineTree();
@@ -155,7 +175,7 @@ async function _reconnectChapterStream(pid, vol, ch) {
                         if (d.status === 'saved') {
                             _clearGenerating(pid, vol, ch);
                             if (outlineData) outlineData.volumes.forEach(function(v) { if (v.volume_number === vol) { v.chapters.forEach(function(c) { if (c.chapter_number === ch) c.status = 'completed'; }); } });
-                            toast('第' + vol + '卷第' + ch + '章已生成完成', 'success');
+                            toast(_chapterLabel(vol, ch) + '已生成完成', 'success');
                             _renderOutlineTree();
                         }
                         if (d.error) { _clearGenerating(pid, vol, ch); }
@@ -206,38 +226,66 @@ async function loadProject(pid) {
         var chText = chNum > 0 ? '第' + chNum + '章' : '未开始';
         document.getElementById('project-info').innerHTML = '<div><strong>' + proj.title + '</strong></div><div class="muted">' + platName + ' | ' + lenName + ' | ' + chText + '</div><div style="margin-top:4px"><a href="/reader?project_id=' + pid + '" target="_blank" style="font-size:11px;color:var(--accent);text-decoration:none">📖 阅读模式</a></div>';
         window.history.replaceState({}, '', '?project_id=' + pid);
-        await loadOutline(); await loadCharactersMini(); await loadStyleBible(pid); await loadMiniGraph();
+        _setDefaultVolumeCount(proj.length);  // 根据篇幅设置默认分卷数
+        await loadOutline(); await loadCharactersMini(); await loadStyleBible(pid); await loadMiniGraph(); await loadForeshadows();
         // 恢复 sessionStorage 中保存的大纲方案
         var savedVers = _loadOutlineVersions(pid);
+        var _versionsRestored = false;
         if (savedVers.length > 0) {
             _outlineVersions = savedVers;
-            // 如果大纲树为空或显示"暂无"，显示恢复提示
+            _versionsRestored = true;
             var tree = document.getElementById('outline-tree');
             var treeIsEmpty = !outlineData || !outlineData.volumes || outlineData.volumes.length === 0;
             if (treeIsEmpty) {
                 tree.innerHTML = '<p class="muted">已有 ' + savedVers.length + ' 个待选方案（来自上次生成）</p>' +
                     '<button class="btn btn-sm btn-primary" style="margin-top:8px;width:100%" onclick="renderVersionCards(_outlineVersions)">📋 查看方案</button>';
+            } else {
+                var hint = document.createElement('div');
+                hint.style.cssText = 'margin-top:8px;padding:8px 12px;background:rgba(124,92,252,0.08);border:1px solid var(--accent);border-radius:6px;font-size:11px;display:flex;justify-content:space-between;align-items:center';
+                hint.innerHTML = '<span>💡 有 ' + savedVers.length + ' 个新生成的待选方案</span>' +
+                    '<button class="btn btn-sm btn-primary" onclick="renderVersionCards(_outlineVersions)" style="font-size:10px">📋 查看方案</button>';
+                tree.appendChild(hint);
             }
         }
-        // 检查是否有进行中的大纲生成任务
-        await _checkOutlineGenerationStatus(pid);
+        // 检查是否有进行中的大纲生成任务（如果 sessionStorage 已恢复则跳过后端检查）
+        await _checkOutlineGenerationStatus(pid, _versionsRestored);
     } catch(e) { document.getElementById('project-info').innerHTML = '<p class="error">加载失败</p>'; }
 }
 
 // ===== Outline =====
 async function loadOutline() {
     var tree = document.getElementById('outline-tree');
+    // 并行请求大纲和章节列表，避免 chapters/list 失败时丢失 status
+    var outlineResp = null, chList = null;
     try {
-        var resp = await fetch('/api/v1/projects/' + currentProjectId + '/outline');
-        outlineData = await resp.json();
-    } catch(e) { outlineData = null; }
-    if (!outlineData || !outlineData.volumes) { tree.innerHTML = '<p class="muted">暂无大纲</p>'; return; }
-    try {
-        var chResp = await fetch('/api/v1/projects/' + currentProjectId + '/chapters/list');
-        var chList = await chResp.json();
-        var completedKeys = new Set((chList || []).map(function(c) { return (c.volume_number || 1) + '_' + c.chapter_number; }));
-        outlineData.volumes.forEach(function(v) { v.chapters.forEach(function(ch) { ch.status = completedKeys.has((v.volume_number || 1) + '_' + ch.chapter_number) ? 'completed' : 'planned'; }); });
+        var results = await Promise.allSettled([
+            fetch('/api/v1/projects/' + currentProjectId + '/outline').then(function(r) { return r.json(); }),
+            fetch('/api/v1/projects/' + currentProjectId + '/chapters/list').then(function(r) { return r.json(); })
+        ]);
+        if (results[0].status === 'fulfilled') outlineResp = results[0].value;
+        if (results[1].status === 'fulfilled') chList = results[1].value;
     } catch(e) {}
+    if (!outlineResp || !outlineResp.volumes) { outlineData = null; tree.innerHTML = '<p class="muted">暂无大纲</p>'; return; }
+    // 保存旧 status 映射，用于 chapters/list 请求失败时降级
+    var oldStatusMap = {};
+    if (outlineData && outlineData.volumes) {
+        outlineData.volumes.forEach(function(v) { (v.chapters || []).forEach(function(ch) {
+            oldStatusMap[(v.volume_number || 1) + '_' + ch.chapter_number] = ch.status;
+        }); });
+    }
+    outlineData = outlineResp;
+    if (chList) {
+        var completedKeys = new Set((chList || []).map(function(c) { return (c.volume_number || 1) + '_' + c.chapter_number; }));
+        outlineData.volumes.forEach(function(v) { v.chapters.forEach(function(ch) {
+            ch.status = completedKeys.has((v.volume_number || 1) + '_' + ch.chapter_number) ? 'completed' : 'planned';
+        }); });
+    } else {
+        // chapters/list 失败时，用旧数据中的 status 降级（新章节默认 planned）
+        outlineData.volumes.forEach(function(v) { v.chapters.forEach(function(ch) {
+            var key = (v.volume_number || 1) + '_' + ch.chapter_number;
+            ch.status = oldStatusMap[key] || 'planned';
+        }); });
+    }
     _renderOutlineTree();
 }
 // 纯渲染：从 outlineData 内存数据重建大纲树 DOM，不请求 API
@@ -245,20 +293,25 @@ function _renderOutlineTree() {
     var tree = document.getElementById('outline-tree');
     if (!outlineData || !outlineData.volumes) { tree.innerHTML = '<p class="muted">暂无大纲</p>'; return; }
     var html = '';
+    var isSingleVolume = outlineData.volumes.length === 1 && !outlineData.volumes[0].title;
     outlineData.volumes.forEach(function(vol) {
-        html += '<div class="volume-title" data-vol-title="' + vol.volume_number + '">📘 第' + vol.volume_number + '卷: ' + (vol.title || '') + '</div>';
+        // 单卷且无卷名时隐藏卷标题
+        if (!isSingleVolume) {
+            html += '<div class="volume-title" data-vol-title="' + vol.volume_number + '">📘 第' + vol.volume_number + '卷: ' + (vol.title || '') + '</div>';
+        }
         (vol.chapters || []).forEach(function(ch) {
             var star = ch.is_hook_point ? '⭐' : (ch.is_climax ? '⚡' : '');
             var active = ch.chapter_number === currentChapterNum ? 'active' : '';
+            var completed = ch.status === 'completed' ? ' completed' : '';
             var statusIcon = ch.status === 'completed' ? '✅' : '⬜';
-            html += '<div class="outline-chapter ' + active + '" draggable="true" onclick="selectChapter(' + ch.chapter_number + ',this,' + vol.volume_number + ')" data-title="' + (ch.title || '').replace(/"/g, '&quot;') + '" data-ch="' + ch.chapter_number + '" data-vol="' + vol.volume_number + '"><span class="ch-status-icon">' + statusIcon + '</span> ' + star + ' Ch' + ch.chapter_number + ' ' + (ch.title || '') + (ch.status === 'completed' ? ' <span class="ch-delete" onclick="event.stopPropagation();deleteChapter(' + vol.volume_number + ',' + ch.chapter_number + ')" title="删除此章">❌</span>' : '') + '</div>';
+            var volNum = vol.volume_number || 1;
+            html += '<div class="outline-chapter' + active + completed + '" draggable="true" onclick="selectChapter(' + ch.chapter_number + ',this,' + volNum + ')" data-title="' + (ch.title || '').replace(/"/g, '&quot;') + '" data-ch="' + ch.chapter_number + '" data-vol="' + volNum + '"><span class="ch-status-icon">' + statusIcon + '</span> ' + star + ' Ch' + ch.chapter_number + ' ' + (ch.title || '') + (ch.status === 'completed' ? ' <span class="ch-delete" onclick="event.stopPropagation();deleteChapter(' + volNum + ',' + ch.chapter_number + ')" title="删除此章">❌</span>' : '') + '</div>';
         });
     });
     tree.innerHTML = html;
     var totalChs = 0, doneChs = 0;
     outlineData.volumes.forEach(function(v) { totalChs += v.chapters.length; v.chapters.forEach(function(ch) { if (ch.status === 'completed') doneChs++; }); });
     document.getElementById('outline-info').textContent = '共 ' + totalChs + ' 章 | 已完成 ' + doneChs + ' 章 | 点击章节查看或生成';
-    document.getElementById('btn-add-ch').disabled = false;
     document.getElementById('btn-edit-ol').disabled = false;
     document.getElementById('btn-batch').disabled = false;
 }
@@ -266,7 +319,7 @@ function _renderOutlineTree() {
 // ===== 删除章节 =====
 function deleteChapter(volNum, chNum) {
     if (!currentProjectId) return;
-    modalConfirm('删除章节正文', '确定删除第' + volNum + '卷第' + chNum + '章的生成内容？<br><small style="color:var(--text-muted)">大纲节点会保留，状态变回⬜，可重新生成。</small>', async function() {
+    modalConfirm('删除章节正文', '确定删除' + _chapterLabel(volNum, chNum) + '的生成内容？<br><small style="color:var(--text-muted)">大纲节点会保留，状态变回⬜，可重新生成。</small>', async function() {
         try {
             var resp = await fetch('/api/v1/projects/' + currentProjectId + '/chapters/' + chNum + '?volume=' + volNum, {method: 'DELETE'});
             var d = await resp.json();
@@ -318,6 +371,14 @@ function _markChapterDone(vol, ch) {
     if (icon) icon.textContent = '✅';
     setTimeout(function() { el.classList.remove('just-completed'); }, 700);
 }
+function _markChapterFailed(vol, ch) {
+    var el = document.querySelector('.outline-chapter[data-vol="' + vol + '"][data-ch="' + ch + '"]');
+    if (!el) return;
+    el.classList.remove('generating');
+    el.classList.add('gen-failed');
+    var icon = el.querySelector('.ch-status-icon');
+    if (icon) icon.textContent = '❌';
+}
 function _clearBatchHighlight() {
     document.querySelectorAll('.outline-chapter.generating').forEach(function(el) {
         el.classList.remove('generating');
@@ -343,7 +404,7 @@ function selectChapter(num, el, volNum) {
     currentChapterNum = num;
     currentVolumeNum = volNum || 1;
     var title = el ? el.getAttribute('data-title') || ('第' + num + '章') : ('第' + num + '章');
-    document.getElementById('current-chapter-label').textContent = '第' + currentVolumeNum + '卷第' + num + '章: ' + title;
+    document.getElementById('current-chapter-label').textContent = _chapterLabel(currentVolumeNum, num, title);
     document.getElementById('btn-ab').disabled = false;
     document.getElementById('btn-annotate').disabled = false;
     document.getElementById('btn-ch-versions').disabled = false;
@@ -414,13 +475,18 @@ async function generateStream() {
     var genVol = currentVolumeNum, genCh = currentChapterNum;
     var genKey = _genKey(currentProjectId, genVol, genCh);
     _ensureStreamStatus();
-    ta.value = ''; ta.disabled = false;
+    ta.value = '⏳ 正在生成中...'; ta.disabled = false;
     _saveGenerating(currentProjectId, genVol, genCh);
     // 注册到活跃流表
     _activeStreams[genKey] = {vol: genVol, ch: genCh, abortCtrl: _chapterAbortCtrl, bufferedText: '', done: false, error: null};
     try {
         var resp = await fetch('/api/v1/stream/chapter', {method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({project_id: currentProjectId, chapter_number: genCh, volume_number: genVol, force: hasContent}), signal: signal});
+        if (!resp.ok) {
+            var errText = await resp.text();
+            throw new Error('服务器错误: ' + resp.status + ' ' + errText.substring(0, 100));
+        }
+        ta.value = ''; // 清空占位文字，开始接收流式内容
         var reader = resp.body.getReader(); var decoder = new TextDecoder(); var buffer = '';
         while (true) {
             var result = await reader.read(); if (result.done) break;
@@ -456,11 +522,16 @@ async function generateStream() {
             }
         }
     } catch(e) {
-        if (e.name === 'AbortError') {} else {
+        if (e.name === 'AbortError') {
+            if (currentVolumeNum === genVol && currentChapterNum === genCh) ta.value = '';
+        } else {
             _activeStreams[genKey].error = '' + e;
             _activeStreams[genKey].done = true;
             _clearGenerating(currentProjectId, genVol, genCh);
-            if (currentVolumeNum === genVol && currentChapterNum === genCh) toast('流式生成失败: ' + e, 'error');
+            if (currentVolumeNum === genVol && currentChapterNum === genCh) {
+                ta.value = '生成失败: ' + e.message;
+                toast('流式生成失败: ' + e.message, 'error');
+            }
         }
     }
     // 如果当前正在看这个章节，清理UI；否则留给loadChapterContent处理
@@ -513,20 +584,31 @@ async function _startBatchGeneration(pending, startIdx) {
     for (var i = (startIdx || 0); i < pending.length; i++) {
         if (_batchCancelled) { statusBar.textContent = '已停止'; _clearBatchHighlight(); _clearBatchState(); break; }
         var p = pending[i];
-        statusBar.textContent = isResume ? '恢复批量生成...' : '批量生成中...';
-        detail.textContent = '第' + p.vol + '卷第' + p.ch + '章: ' + p.title + ' (' + (i + 1) + '/' + total + ')';
+        statusBar.textContent = '批量生成中...';
+        detail.textContent = _chapterLabel(p.vol, p.ch, p.title) + ' (' + (i + 1) + '/' + total + ')';
         bar.style.width = Math.round(i / total * 100) + '%';
         _saveBatchState(currentProjectId, pending, i, done, failed);
-        // 批量生成中，只更新编辑器和标签当用户正在查看当前批量生成的章节
+        // 切换到当前生成的章节（让用户实时看到文本流）
+        currentChapterNum = p.ch;
+        currentVolumeNum = p.vol;
+        document.getElementById('current-chapter-label').textContent = _chapterLabel(p.vol, p.ch, p.title);
+        document.querySelectorAll('.outline-chapter.active').forEach(function(e) { e.classList.remove('active'); });
+        var chEl = document.querySelector('.outline-chapter[data-vol="' + p.vol + '"][data-ch="' + p.ch + '"]');
+        if (chEl) chEl.classList.add('active');
         var ta = document.getElementById('chapter-content');
         ta.value = ''; ta.disabled = false;
         _saveGenerating(currentProjectId, p.vol, p.ch);
         _highlightBatchChapter(p.vol, p.ch);
         var batchGenKey = _genKey(currentProjectId, p.vol, p.ch);
-        _activeStreams[batchGenKey] = {vol: p.vol, ch: p.ch, abortCtrl: null, bufferedText: '', done: false, error: null};
+        var abortCtrl = new AbortController();
+        _activeStreams[batchGenKey] = {vol: p.vol, ch: p.ch, abortCtrl: abortCtrl, bufferedText: '', done: false, error: null};
+        // 设置超时（5分钟）
+        var timeoutId = setTimeout(function() { abortCtrl.abort(); }, 300000);
         try {
             var resp = await fetch('/api/v1/stream/chapter', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({project_id: currentProjectId, chapter_number: p.ch, volume_number: p.vol})});
+                body: JSON.stringify({project_id: currentProjectId, chapter_number: p.ch, volume_number: p.vol}),
+                signal: abortCtrl.signal});
+            clearTimeout(timeoutId);
             var reader = resp.body.getReader(); var decoder = new TextDecoder(); var buffer = '';
             while (true) {
                 var r = await reader.read(); if (r.done) break;
@@ -548,12 +630,24 @@ async function _startBatchGeneration(pending, startIdx) {
                                 if (outlineData) outlineData.volumes.forEach(function(v) { if (v.volume_number === p.vol) { v.chapters.forEach(function(ch) { if (ch.chapter_number === p.ch) ch.status = 'completed'; }); } });
                                 _renderOutlineTree();
                             }
-                            if (d.error) { _activeStreams[batchGenKey].error = d.error; _activeStreams[batchGenKey].done = true; _clearGenerating(currentProjectId, p.vol, p.ch); _clearBatchHighlight(); }
+                            if (d.error) { _activeStreams[batchGenKey].error = d.error; _activeStreams[batchGenKey].done = true; failed++; _clearGenerating(currentProjectId, p.vol, p.ch); _markChapterFailed(p.vol, p.ch); }
                         } catch(e) {}
                     }
                 }
             }
-        } catch(e) { failed++; _activeStreams[batchGenKey].error = '' + e; _activeStreams[batchGenKey].done = true; _clearGenerating(currentProjectId, p.vol, p.ch); _clearBatchHighlight(); }
+        } catch(e) {
+            clearTimeout(timeoutId);
+            failed++;
+            _activeStreams[batchGenKey].error = '' + e;
+            _activeStreams[batchGenKey].done = true;
+            _clearGenerating(currentProjectId, p.vol, p.ch);
+            _markChapterFailed(p.vol, p.ch);
+            if (e.name === 'AbortError') {
+                toast(_chapterLabel(p.vol, p.ch) + ' 生成超时', 'error');
+            } else {
+                toast(_chapterLabel(p.vol, p.ch) + ' 生成失败', 'error');
+            }
+        }
         setTimeout(function() { delete _activeStreams[batchGenKey]; }, 30000);
         bar.style.width = Math.round((i + 1) / total * 100) + '%';
         _saveBatchState(currentProjectId, pending, i + 1, done, failed);
@@ -570,6 +664,13 @@ async function _startBatchGeneration(pending, startIdx) {
     document.getElementById('btn-cancel-batch').disabled = false;
     toast(wasCancelled ? '批量生成已停止' : '批量生成完成: ' + done + '/' + total + ' 章', wasCancelled ? 'info' : 'success');
     setTimeout(function() { document.getElementById('batch-progress').style.display = 'none'; }, 3000);
+    // 如果有失败的章节，后端任务可能仍在运行，延迟 8 秒后重新检查
+    if (failed > 0 && !wasCancelled) {
+        setTimeout(function() {
+            statusBar.textContent = '检查失败章节是否已保存...';
+            loadOutline();
+        }, 8000);
+    }
 }
 function cancelBatch() {
     _batchCancelled = true; _clearBatchState(); _batchActive = false;
@@ -732,12 +833,11 @@ async function rewriteSelection() {
     var resultDiv = document.getElementById('rewrite-result');
     var resultText = document.getElementById('rewrite-result-text');
     resultDiv.style.display = 'block'; resultText.textContent = 'AI 正在改写...';
-    var before = ta.value.substring(Math.max(0, _rewriteRange.start - 500), _rewriteRange.start);
-    var after = ta.value.substring(_rewriteRange.end, _rewriteRange.end + 500);
+    var fullContent = ta.value;
     try {
         var resp = await fetch('/api/v1/projects/' + currentProjectId + '/rewrite', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({text: _rewriteRange.original, context_before: before, context_after: after, platform: ''})
+            body: JSON.stringify({text: _rewriteRange.original, full_content: fullContent, selection_start: _rewriteRange.start, selection_end: _rewriteRange.end, platform: ''})
         });
         var d = await resp.json();
         if (d.rewritten) { resultText.textContent = d.rewritten; resultText.dataset.rewritten = d.rewritten; }
@@ -750,8 +850,12 @@ function applyRewrite() {
     var resultText = document.getElementById('rewrite-result-text');
     var rewritten = resultText.dataset.rewritten;
     if (!_rewriteRange || !rewritten) return;
+    var lenDiff = rewritten.length - _rewriteRange.original.length;
     ta.value = ta.value.substring(0, _rewriteRange.start) + rewritten + ta.value.substring(_rewriteRange.end);
-    updateWordCount(); hideRewriteToolbar(); toast('已替换选区内容', 'success');
+    updateWordCount(); hideRewriteToolbar();
+    var msg = '已替换选区内容';
+    if (Math.abs(lenDiff) > 20) msg += '（' + (lenDiff > 0 ? '+' : '') + lenDiff + '字）';
+    toast(msg + '。建议检查后文是否衔接一致', 'success', 5000);
 }
 
 async function saveChapter() {
@@ -850,16 +954,20 @@ async function incubateIdea() {
 // ===== 大纲生成 =====
 async function generateOutline() {
     if (!currentProjectId) return;
+    var numVersions = parseInt(document.getElementById('outline-version-count').value) || 3;
+    var numVolumes = parseInt(document.getElementById('outline-volume-count').value) || 0;
     var btn = document.getElementById('btn-outline'); btn.disabled = true; btn.textContent = '生成中...';
-    var tree = document.getElementById('outline-tree'); tree.innerHTML = '<p class="muted">⏳ 启动大纲生成...</p>';
+    var volLabel = numVolumes === 0 ? '自动分卷' : numVolumes + '卷';
+    var tree = document.getElementById('outline-tree'); tree.innerHTML = '<p class="muted">⏳ 启动大纲生成（' + numVersions + '版 · ' + volLabel + '）...</p>';
     _outlineVersions = [];
 
     try {
-        // 使用异步接口启动后台生成
+        var body = {project_id: currentProjectId, versions: numVersions};
+        if (numVolumes > 0) body.volumes = numVolumes;
         var resp = await fetch('/api/v1/outline/generate-async', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({project_id: currentProjectId, versions: 3})
+            body: JSON.stringify(body)
         });
         var data = await resp.json();
 
@@ -878,12 +986,33 @@ async function generateOutline() {
     }
 }
 
+// 取消大纲生成
+async function _cancelOutlineGeneration() {
+    if (!currentProjectId) return;
+    try {
+        var resp = await fetch('/api/v1/outline/cancel/' + currentProjectId, {method: 'POST'});
+        var data = await resp.json();
+        if (data.status === 'cancelling') {
+            toast('正在取消大纲生成...', 'info');
+        } else {
+            toast(data.message || '没有进行中的任务', 'warning');
+        }
+    } catch(e) {
+        toast('取消失败: ' + e.message, 'error');
+    }
+}
+
 // 轮询大纲生成状态
 var _outlinePollTimer = null;
 
 // 页面加载时检查是否有进行中的大纲生成任务
-async function _checkOutlineGenerationStatus(pid) {
+async function _checkOutlineGenerationStatus(pid, skipIfAlreadyRestored) {
     if (!pid) return;
+    if (skipIfAlreadyRestored) {
+        // sessionStorage 已恢复，只需清除后端状态
+        try { fetch('/api/v1/outline/status/' + pid, {method: 'DELETE'}); } catch(e) {}
+        return;
+    }
     try {
         var resp = await fetch('/api/v1/outline/status/' + pid);
         var data = await resp.json();
@@ -899,31 +1028,55 @@ async function _checkOutlineGenerationStatus(pid) {
 
         if (data.status === 'done' && data.versions && data.versions.length > 0) {
             // 有已完成但未领取的结果（可能是服务重启后恢复的）
+            var treeIsEmpty = !outlineData || !outlineData.volumes || outlineData.volumes.length === 0;
+
+            // 如果项目已有大纲，直接清除旧方案，不再打扰用户
+            if (!treeIsEmpty) {
+                await fetch('/api/v1/outline/status/' + pid, {method: 'DELETE'});
+                return;
+            }
+
+            // 没有现有大纲，恢复方案
             _outlineVersions = data.versions.map(function(v) {
                 v.data._style_tag = v.style_tag || '';
                 return v.data;
             });
             var tree = document.getElementById('outline-tree');
-            var treeIsEmpty = !outlineData || !outlineData.volumes || outlineData.volumes.length === 0;
             var source = data.from_db ? '服务重启前' : '上次生成';
             var msg = '已恢复 ' + _outlineVersions.length + ' 个大纲方案（来自' + source + '）';
 
-            if (treeIsEmpty) {
-                // 没有现有大纲，直接显示恢复的方案
-                tree.innerHTML = '<p class="muted">✅ ' + msg + '</p>' +
-                    '<button class="btn btn-sm btn-primary" style="margin-top:8px;width:100%" onclick="renderVersionCards(_outlineVersions)">📋 查看方案</button>';
-            } else {
-                // 已有大纲，在大纲树下方添加提示
-                var hint = document.createElement('div');
-                hint.style.cssText = 'margin-top:8px;padding:8px;background:rgba(124,92,252,0.08);border:1px solid var(--accent);border-radius:6px;font-size:11px;text-align:center';
-                hint.innerHTML = '💡 ' + msg + ' <button class="btn btn-sm btn-primary" onclick="renderVersionCards(_outlineVersions)" style="margin-left:8px;font-size:10px">📋 查看方案</button>';
-                tree.appendChild(hint);
-            }
+            tree.innerHTML = '<p class="muted">✅ ' + msg + '</p>' +
+                '<button class="btn btn-sm btn-primary" style="margin-top:8px;width:100%" onclick="renderVersionCards(_outlineVersions)">📋 查看方案</button>';
 
             _saveOutlineVersions(_outlineVersions, pid);
             toast(msg, 'success', 5000);
             // 清除后端状态
-            fetch('/api/v1/outline/status/' + pid, {method: 'DELETE'});
+            await fetch('/api/v1/outline/status/' + pid, {method: 'DELETE'});
+        }
+
+        if (data.status === 'cancelled' && data.versions && data.versions.length > 0) {
+            // 有已取消但有部分结果的任务
+            var treeIsEmpty = !outlineData || !outlineData.volumes || outlineData.volumes.length === 0;
+
+            // 如果项目已有大纲，直接清除旧方案，不再打扰用户
+            if (!treeIsEmpty) {
+                await fetch('/api/v1/outline/status/' + pid, {method: 'DELETE'});
+                return;
+            }
+
+            // 没有现有大纲，显示取消的方案
+            _outlineVersions = data.versions.map(function(v) {
+                v.data._style_tag = v.style_tag || '';
+                return v.data;
+            });
+            var tree = document.getElementById('outline-tree');
+            var hint = document.createElement('div');
+            hint.style.cssText = 'margin-top:8px;padding:8px;background:rgba(255,165,0,0.08);border:1px solid orange;border-radius:6px;font-size:11px;text-align:center';
+            hint.innerHTML = '⏹ 上次生成已取消，保留了 ' + _outlineVersions.length + ' 个方案 <button class="btn btn-sm btn-primary" onclick="renderVersionCards(_outlineVersions)" style="margin-left:8px;font-size:10px">📋 查看方案</button>';
+            tree.appendChild(hint);
+            _saveOutlineVersions(_outlineVersions, pid);
+            // 清除后端状态
+            await fetch('/api/v1/outline/status/' + pid, {method: 'DELETE'});
         }
     } catch(e) {
         // 静默失败
@@ -959,13 +1112,15 @@ async function _pollOutlineStatus() {
             // 构建 HTML：进度条 + 已生成的版本卡片
             var html = '';
 
-            // 进度条
+            // 进度条 + 停止按钮
             html += '<div style="margin-bottom:12px">';
-            html += '<p class="muted" style="margin-bottom:6px">⏳ ' + msg + '</p>';
-            html += '<div style="width:100%;height:6px;background:var(--bg);border-radius:3px;overflow:hidden">';
-            html += '<div style="width:' + (current / total * 100) + '%;height:100%;background:var(--accent);transition:width 0.3s;border-radius:3px"></div>';
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+            html += '<p class="muted" style="margin:0">⏳ ' + msg + '</p>';
+            html += '<button class="btn btn-sm" style="background:var(--bad);color:white;font-size:10px;padding:2px 10px" onclick="_cancelOutlineGeneration()">⏹ 停止</button>';
             html += '</div>';
-            html += '<div style="font-size:10px;color:var(--text-muted);margin-top:4px;text-align:right">' + versions.length + '/' + total + ' 个方案已生成</div>';
+            html += '<div style="width:100%;height:6px;background:var(--bg);border-radius:3px;overflow:hidden">';
+            html += '<div style="width:' + (versions.length / total * 100) + '%;height:100%;background:var(--accent);transition:width 0.3s;border-radius:3px"></div>';
+            html += '</div>';
             html += '</div>';
 
             // 增量显示已生成的版本卡片
@@ -986,7 +1141,8 @@ async function _pollOutlineStatus() {
                     if (isEmpty) {
                         html += '<div style="font-size:11px;color:var(--bad);margin-top:4px">⚠ 该方案生成失败（无有效内容）</div>';
                     } else {
-                        html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' + vols.length + ' 卷 · ' + totalChs + ' 章</div>';
+                        var volInfo = vols.length > 1 ? vols.length + ' 卷 · ' : '';
+                        html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' + volInfo + totalChs + ' 章</div>';
                     }
                     // 显示第一章标题预览
                     if (vols.length > 0 && vols[0].chapters && vols[0].chapters.length > 0) {
@@ -1040,7 +1196,8 @@ async function _pollOutlineStatus() {
                     html += '<strong style="font-size:13px">方案 ' + (idx + 1) + '</strong>';
                     if (styleTag) html += '<span style="font-size:10px;padding:2px 8px;background:var(--accent);color:white;border-radius:10px">' + esc(styleTag) + '</span>';
                     html += '</div>';
-                    html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' + vols.length + ' 卷 · ' + totalChs + ' 章</div>';
+                    var volInfo = vols.length > 1 ? vols.length + ' 卷 · ' : '';
+                    html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' + volInfo + totalChs + ' 章</div>';
                     if (vols.length > 0 && vols[0].chapters && vols[0].chapters.length > 0) {
                         var firstCh = vols[0].chapters[0];
                         html += '<div style="font-size:11px;margin-top:4px;color:var(--text)">Ch1: ' + esc(firstCh.title || '无标题') + '</div>';
@@ -1057,13 +1214,13 @@ async function _pollOutlineStatus() {
 
                 _clearOutlineVersions(currentProjectId);
                 _saveOutlineVersions(_outlineVersions, currentProjectId);
-                _saveDraftOutlineToBackend(_outlineVersions[0]);
+                // 不自动保存草稿，等用户明确应用某个版本
                 toast('大纲生成完成，共 ' + _outlineVersions.length + ' 个方案', 'success');
             } else {
                 tree.innerHTML = '<p class="muted">未生成有效大纲</p>';
                 toast('所有版本均生成失败', 'error');
             }
-            fetch('/api/v1/outline/status/' + currentProjectId, {method: 'DELETE'});
+            // 不删除后端状态，让页面恢复时能通过 _checkOutlineGenerationStatus 找到
             btn.disabled = false; btn.textContent = '生成';
             return;
         }
@@ -1072,6 +1229,47 @@ async function _pollOutlineStatus() {
             _shownOutlineVersionCount = 0;
             tree.innerHTML = '<p class="muted">❌ ' + (data.message || '生成失败') + '</p>';
             toast('大纲生成失败', 'error');
+            btn.disabled = false; btn.textContent = '生成';
+            return;
+        }
+
+        if (data.status === 'cancelled') {
+            _shownOutlineVersionCount = 0;
+            var versions = data.versions || [];
+            if (versions.length > 0) {
+                // 有部分已生成的版本，显示它们
+                _outlineVersions = versions.map(function(v) {
+                    v.data._style_tag = v.style_tag || '';
+                    return v.data;
+                });
+                var html = '<p class="muted" style="margin-bottom:12px">⏹ 已取消，已生成 ' + _outlineVersions.length + ' 个方案</p>';
+                html += '<div style="display:flex;flex-direction:column;gap:8px">';
+                _outlineVersions.forEach(function(ver, idx) {
+                    var vols = ver.volumes || [];
+                    var totalChs = 0;
+                    vols.forEach(function(v) { totalChs += (v.chapters || []).length; });
+                    var styleTag = ver._style_tag || '';
+                    html += '<div class="version-card" style="cursor:pointer" onclick="_previewOutlineVersion(' + idx + ')">';
+                    html += '<div style="display:flex;justify-content:space-between;align-items:center">';
+                    html += '<strong style="font-size:13px">方案 ' + (idx + 1) + '</strong>';
+                    if (styleTag) html += '<span style="font-size:10px;padding:2px 8px;background:var(--accent);color:white;border-radius:10px">' + esc(styleTag) + '</span>';
+                    html += '</div>';
+                    var volInfo = vols.length > 1 ? vols.length + ' 卷 · ' : '';
+                    html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' + volInfo + totalChs + ' 章</div>';
+                    html += '<div style="display:flex;gap:4px;margin-top:8px">';
+                    html += '<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();_applyOutlineVersion(' + idx + ')" style="font-size:10px">✅ 应用此方案</button>';
+                    html += '<button class="btn btn-sm" onclick="event.stopPropagation();_previewOutlineVersion(' + idx + ')" style="font-size:10px">👁️ 预览</button>';
+                    html += '</div>';
+                    html += '</div>';
+                });
+                html += '</div>';
+                tree.innerHTML = html;
+                _saveOutlineVersions(_outlineVersions, currentProjectId);
+                toast('已取消大纲生成，保留已生成的 ' + _outlineVersions.length + ' 个方案', 'info');
+            } else {
+                tree.innerHTML = '<p class="muted">⏹ 已取消大纲生成</p>';
+                toast('已取消大纲生成', 'info');
+            }
             btn.disabled = false; btn.textContent = '生成';
             return;
         }
@@ -1103,9 +1301,13 @@ async function _applyOutlineVersion(idx) {
         });
         var result = await resp.json();
         if (result.status === 'applied') {
-            toast('已应用方案 ' + (idx + 1) + ' (' + result.volumes + '卷' + result.chapters + '章)', 'success');
-            // 清除生成状态
-            fetch('/api/v1/outline/status/' + currentProjectId, {method: 'DELETE'});
+            var volText = result.volumes > 1 ? result.volumes + '卷' : '';
+            toast('已应用方案 ' + (idx + 1) + ' (' + volText + result.chapters + '章)', 'success');
+            // 清除待选方案
+            _outlineVersions = [];
+            _clearOutlineVersions(currentProjectId);
+            // 等待后端状态清除完成
+            await fetch('/api/v1/outline/status/' + currentProjectId, {method: 'DELETE'});
             // 重新加载大纲
             await loadOutline();
         } else {
@@ -1150,8 +1352,20 @@ function renderVersionCards(versions) {
         var estWords = totalChs * 3000;
         var estLabel = estWords >= 10000 ? (estWords / 10000).toFixed(1) + '万字' : estWords + '字';
         var styleTag = ver._style_tag || '';
+        // 提取关键人物名称（从 character_moments 中提取人名）
         var keyChars = new Set();
-        vols.forEach(function(vol) { (vol.chapters || []).forEach(function(ch) { (ch.character_moments || []).forEach(function(cm) { if (keyChars.size < 5) keyChars.add(cm.substring(0, 10)); }); }); });
+        vols.forEach(function(vol) {
+            (vol.chapters || []).forEach(function(ch) {
+                // 从 character_moments 提取人名（通常格式为"人物名做某事"）
+                (ch.character_moments || []).forEach(function(cm) {
+                    if (keyChars.size < 8) {
+                        // 截取前 15 个字符作为标签，避免太长
+                        var label = cm.length > 15 ? cm.substring(0, 15) + '...' : cm;
+                        keyChars.add(label);
+                    }
+                });
+            });
+        });
         var charList = Array.from(keyChars);
         var climaxCount = 0, hookCount = 0;
         vols.forEach(function(vol) { (vol.chapters || []).forEach(function(ch) { if (ch.is_climax) climaxCount++; if (ch.is_hook_point) hookCount++; }); });
@@ -1173,7 +1387,7 @@ function renderVersionCards(versions) {
 
         // 统计标签
         html += '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">';
-        html += '<span style="font-size:13px;padding:4px 12px;background:var(--surface2);border-radius:6px">📚 ' + vols.length + ' 卷</span>';
+        if (vols.length > 1) html += '<span style="font-size:13px;padding:4px 12px;background:var(--surface2);border-radius:6px">📚 ' + vols.length + ' 卷</span>';
         html += '<span style="font-size:13px;padding:4px 12px;background:var(--surface2);border-radius:6px">📄 ' + totalChs + ' 章</span>';
         html += '<span style="font-size:13px;padding:4px 12px;background:var(--surface2);border-radius:6px">✏️ ~' + estLabel + '</span>';
         if (climaxCount) html += '<span style="font-size:13px;padding:4px 12px;background:rgba(255,152,0,0.15);color:#ff9800;border-radius:6px">⚡ ' + climaxCount + ' 高潮</span>';
@@ -1182,54 +1396,57 @@ function renderVersionCards(versions) {
 
         // 人物标签
         if (charList.length > 0) {
-            html += '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">';
-            charList.forEach(function(c) { html += '<span style="font-size:13px;padding:4px 12px;background:rgba(33,150,243,0.1);color:#2196f3;border-radius:6px">👤 ' + escAttr(c) + '</span>'; });
+            html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">';
+            charList.forEach(function(c) { html += '<span style="font-size:12px;padding:3px 10px;background:rgba(33,150,243,0.1);color:#2196f3;border-radius:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escAttr(c) + '">👤 ' + escAttr(c) + '</span>'; });
             html += '</div>';
         }
 
-        // 卷摘要（可折叠）
-        vols.forEach(function(vol, vi) {
-            var descId = 'vol-desc-' + idx + '-' + vi;
-            var fullDesc = escAttr(vol.arc_description || '');
-            var shortDesc = fullDesc.substring(0, 120);
-            var needExpand = fullDesc.length > 120;
+        // 卷摘要（可折叠）- 只有多卷时才显示
+        var showVolumes = vols.length > 1 || (vols.length === 1 && vols[0].title);
+        if (showVolumes) {
+            vols.forEach(function(vol, vi) {
+                var descId = 'vol-desc-' + idx + '-' + vi;
+                var fullDesc = escAttr(vol.arc_description || '');
+                var shortDesc = fullDesc.substring(0, 200);
+                var needExpand = fullDesc.length > 200;
 
-            html += '<div style="margin-top:10px">';
-            html += '<div style="font-size:15px;font-weight:600;color:var(--accent)">📘 第' + vol.volume_number + '卷: ' + escAttr(vol.title || '未命名') + ' <span style="color:var(--text-muted);font-weight:400;font-size:13px">(' + (vol.chapters || []).length + '章)</span></div>';
-            if (vol.arc_description) {
-                html += '<div style="padding-left:16px;font-size:14px;color:var(--text-muted);line-height:1.7;margin-top:4px">';
-                html += '<span id="' + descId + '-short">' + shortDesc + (needExpand ? '...' : '') + '</span>';
-                if (needExpand) {
-                    html += '<span id="' + descId + '-full" style="display:none">' + fullDesc + '</span>';
-                    html += ' <a href="javascript:void(0)" onclick="toggleVolDesc(\'' + descId + '\')" id="' + descId + '-btn" style="color:var(--accent);font-size:12px;white-space:nowrap">展开全部</a>';
+                html += '<div style="margin-top:10px">';
+                html += '<div style="font-size:15px;font-weight:600;color:var(--accent)">📘 第' + vol.volume_number + '卷: ' + escAttr(vol.title || '未命名') + ' <span style="color:var(--text-muted);font-weight:400;font-size:13px">(' + (vol.chapters || []).length + '章)</span></div>';
+                if (vol.arc_description) {
+                    html += '<div style="padding-left:16px;font-size:14px;color:var(--text-muted);line-height:1.7;margin-top:4px">';
+                    html += '<span id="' + descId + '-short">' + shortDesc + (needExpand ? '...' : '') + '</span>';
+                    if (needExpand) {
+                        html += '<span id="' + descId + '-full" style="display:none">' + fullDesc + '</span>';
+                        html += ' <a href="javascript:void(0)" onclick="toggleVolDesc(\'' + descId + '\')" id="' + descId + '-btn" style="color:var(--accent);font-size:12px;white-space:nowrap">展开全部</a>';
+                    }
+                    html += '</div>';
                 }
                 html += '</div>';
-            }
-            html += '</div>';
-        });
+            });
+        }
 
         // 展开/折叠章节详情
         html += '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">';
         html += '<button class="version-expand-btn" onclick="toggleVersionDetail(' + idx + ')" style="font-size:14px;padding:6px 12px">▶ 查看章节详情</button>';
         html += '<div class="version-detail" id="ver-detail-' + idx + '">';
         vols.forEach(function(vol, vi) {
-            html += '<div style="font-size:15px;font-weight:600;margin:12px 0 6px;color:var(--accent)">📘 第' + vol.volume_number + '卷: ' + escAttr(vol.title || '') + '</div>';
+            if (showVolumes) html += '<div style="font-size:15px;font-weight:600;margin:12px 0 6px;color:var(--accent)">📘 第' + vol.volume_number + '卷: ' + escAttr(vol.title || '') + '</div>';
             (vol.chapters || []).forEach(function(ch, ci) {
                 var marks = '';
                 if (ch.is_climax) marks += '<span style="color:#ff9800">⚡</span>';
                 if (ch.is_hook_point) marks += '<span style="color:#4caf50">⭐</span>';
                 var summaryId = 'ch-summary-' + idx + '-' + vi + '-' + ci;
                 var fullSummary = escAttr(ch.summary || '');
-                var shortSummary = fullSummary.substring(0, 80);
-                var needSummaryExpand = fullSummary.length > 80;
+                var shortSummary = fullSummary.substring(0, 200);
+                var needSummaryExpand = fullSummary.length > 200;
 
                 html += '<div style="display:flex;gap:8px;padding:6px 0;font-size:14px"><span style="color:var(--text-muted);min-width:50px">Ch' + ch.chapter_number + '</span><span style="flex:1;line-height:1.5">' + marks + ' ' + escAttr(ch.title || '') + '</span></div>';
                 if (ch.summary) {
-                    html += '<div style="display:flex;gap:8px;padding:2px 0 6px 58px;font-size:13px;color:var(--text-muted);line-height:1.6">';
-                    html += '<span id="' + summaryId + '-short" style="flex:1">' + shortSummary + (needSummaryExpand ? '...' : '') + '</span>';
+                    html += '<div style="padding:2px 0 6px 58px;font-size:13px;color:var(--text-muted);line-height:1.6">';
+                    html += '<span id="' + summaryId + '-short">' + shortSummary + (needSummaryExpand ? '...' : '') + '</span>';
                     if (needSummaryExpand) {
-                        html += '<span id="' + summaryId + '-full" style="display:none;flex:1">' + fullSummary + '</span>';
-                        html += ' <a href="javascript:void(0)" onclick="toggleChSummary(\'' + summaryId + '\')" id="' + summaryId + '-btn" style="color:var(--accent);font-size:11px;white-space:nowrap">展开</a>';
+                        html += '<span id="' + summaryId + '-full" style="display:none">' + fullSummary + '</span>';
+                        html += ' <a href="javascript:void(0)" onclick="toggleChSummary(\'' + summaryId + '\')" id="' + summaryId + '-btn" style="color:var(--accent);font-size:11px;white-space:nowrap">展开全部</a>';
                     }
                     html += '</div>';
                 }
@@ -1287,7 +1504,7 @@ async function applyOutlineVersion(idx) {
     try {
         var resp = await fetch('/api/v1/projects/' + currentProjectId + '/outline/apply', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({data: data})});
         var result = await resp.json();
-        if (result.status === 'applied') { toast('已应用方案' + (idx + 1) + ' (' + result.volumes + '卷' + result.chapters + '章)', 'success'); closeOutlineVersionsModal(); _clearOutlineVersions(currentProjectId); _outlineVersions = []; await loadOutline(); }
+        if (result.status === 'applied') { var volText = result.volumes > 1 ? result.volumes + '卷' : ''; toast('已应用方案' + (idx + 1) + ' (' + volText + result.chapters + '章)', 'success'); closeOutlineVersionsModal(); _clearOutlineVersions(currentProjectId); _outlineVersions = []; await loadOutline(); }
         else { toast('应用失败', 'error'); }
     } catch(e) { toast('应用失败: ' + e, 'error'); }
 }
@@ -1306,13 +1523,13 @@ async function loadForeshadows() {
         var d = await resp.json();
         if (!d || d.total === 0) { pendingList.innerHTML = '<p class="muted">暂无伏笔，点击"添加伏笔"创建</p>'; torecoverList.innerHTML = '<p class="muted">暂无</p>'; doneList.innerHTML = '<p class="muted">暂无</p>'; return; }
         var unpaid = d.unpaid || [];
-        var pending = unpaid.filter(function(f) { return f.status === 'planted'; });
-        var toRecover = unpaid.filter(function(f) { return f.status === 'building'; });
         var paid = d.paid || [];
-        if (pending.length === 0) pendingList.innerHTML = '<p class="muted">暂无</p>';
-        else pendingList.innerHTML = pending.map(function(f) { return '<div style="padding:6px;margin:4px 0;background:var(--bg);border-radius:4px;border-left:3px solid var(--bad)"><div style="font-size:12px">' + esc(f.description || '').substring(0, 60) + '</div><div style="font-size:10px;color:var(--text-muted);margin-top:2px">' + (f.type || '') + ' | Ch' + (f.planted_chapter || '?') + '</div></div>'; }).join('');
+        // 待回收 = 所有未回收的伏笔（planted + building）
+        var toRecover = unpaid;
         if (toRecover.length === 0) torecoverList.innerHTML = '<p class="muted">暂无</p>';
         else torecoverList.innerHTML = toRecover.map(function(f) { return '<div style="padding:6px;margin:4px 0;background:var(--bg);border-radius:4px;border-left:3px solid var(--warn);cursor:pointer" onclick="markForeshadowPaid(\'' + f.foreshadow_id + '\')"><div style="font-size:12px">' + esc(f.description || '').substring(0, 60) + '</div><div style="font-size:10px;color:var(--text-muted);margin-top:2px">' + (f.type || '') + ' | Ch' + (f.planted_chapter || '?') + '<span style="color:var(--ok);margin-left:8px">点击标记回收</span></div></div>'; }).join('');
+        // 隐藏待填充列表（合并到待回收）
+        document.getElementById('foreshadow-pending').style.display = 'none';
         if (paid.length === 0) doneList.innerHTML = '<p class="muted">暂无</p>';
         else { doneList.innerHTML = paid.slice(0, 5).map(function(f) { return '<div style="padding:4px;margin:2px 0;font-size:11px;opacity:0.6">✓ ' + (f.description || '').substring(0, 40) + '</div>'; }).join(''); if (paid.length > 5) doneList.innerHTML += '<p class="muted" style="font-size:11px">...还有' + (paid.length - 5) + '个</p>'; }
     } catch(e) { pendingList.innerHTML = '<p class="error">加载失败</p>'; torecoverList.innerHTML = ''; doneList.innerHTML = ''; }
@@ -1370,12 +1587,18 @@ function _renderOutlineEditor() {
     var body = document.getElementById('_outline-editor-body');
     if (!body) return;
     var html = '';
+    var showVolumes = outlineData.volumes.length > 1 || (outlineData.volumes.length === 1 && outlineData.volumes[0].title);
     outlineData.volumes.forEach(function(vol, vi) {
-        html += '<div style="margin-bottom:20px">' +
-            '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">' +
-            '<span style="font-weight:700;color:var(--accent);font-size:15px">📘 第' + vol.volume_number + '卷</span>' +
-            '<input value="' + escAttr(vol.title || '') + '" data-vi="' + vi + '" class="vol-title-input" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--accent);border-radius:8px;padding:8px 12px;font-size:14px;outline:none;font-weight:500">' +
-            '<button class="btn btn-sm" onclick="_addChapterToVol(' + vi + ')" style="font-size:13px;white-space:nowrap;padding:6px 12px">+ 添加</button></div>';
+        html += '<div style="margin-bottom:20px">';
+        if (showVolumes) {
+            html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">' +
+                '<span style="font-weight:700;color:var(--accent);font-size:15px">📘 第' + vol.volume_number + '卷</span>' +
+                '<input value="' + escAttr(vol.title || '') + '" data-vi="' + vi + '" class="vol-title-input" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--accent);border-radius:8px;padding:8px 12px;font-size:14px;outline:none;font-weight:500">' +
+                '<button class="btn btn-sm" onclick="_addChapterToVol(' + vi + ')" style="font-size:13px;white-space:nowrap;padding:6px 12px">+ 添加</button></div>';
+        } else {
+            html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">' +
+                '<button class="btn btn-sm" onclick="_addChapterToVol(' + vi + ')" style="font-size:13px;white-space:nowrap;padding:6px 12px">+ 添加章节</button></div>';
+        }
         var chs = vol.chapters || [];
         if (chs.length === 0) {
             html += '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;border:1px dashed var(--border);border-radius:8px">暂无章节，点击"+ 添加"创建</div>';
@@ -1543,7 +1766,7 @@ var _chCurrentVersionId = null;
 
 async function showChapterVersions() {
     if (!currentProjectId || !currentChapterNum) return;
-    document.getElementById('ch-version-title').textContent = '第' + currentVolumeNum + '卷第' + currentChapterNum + '章';
+    document.getElementById('ch-version-title').textContent = _chapterLabel(currentVolumeNum, currentChapterNum);
     document.getElementById('ch-version-modal').style.display = 'flex';
     document.getElementById('ch-version-list').innerHTML = '<p class="muted" style="text-align:center;padding:20px">加载中...</p>';
     document.getElementById('ch-version-preview').innerHTML = '<p class="muted" style="text-align:center;padding:40px">选择一个版本查看内容</p>';
@@ -1573,9 +1796,10 @@ function renderChVersionList() {
         var srcLabel = {manual:'手动保存', generate:'AI生成', optimize:'优化', rollback:'回滚', pre_rollback:'回滚前'}[src] || src;
         var srcColor = {generate:'var(--accent)', optimize:'var(--ok)', rollback:'var(--warn)', pre_rollback:'var(--text-muted)'}[src] || 'var(--text-muted)';
         var selected = _chDiffSelected.indexOf(v.id) >= 0;
+        var displayNum = v.project_version_num || v.id;
         var isCurrent = _chCurrentVersionId && v.id === _chCurrentVersionId;
         html += '<div class="version-card' + (selected ? ' selected' : '') + '" style="' + (selected ? 'border-color:var(--accent);background:rgba(124,92,252,0.05)' : '') + (isCurrent ? 'border:2px solid var(--ok);' : '') + '" onclick="loadChVersion(' + v.id + ',' + i + ')">';
-        html += '<h4><span>v' + v.id + '</span>';
+        html += '<h4><span>v' + displayNum + '</span>';
         if (isCurrent) html += '<span style="font-size:10px;background:var(--ok);color:#fff;padding:1px 6px;border-radius:8px;margin-left:6px">当前使用</span>';
         html += '<span style="font-size:10px;color:var(--text-muted)">' + (v.word_count || 0) + '字</span></h4>';
         html += '<div class="vol-info">' + (v.created_at || '') + '</div>';
@@ -1678,12 +1902,14 @@ async function loadChVersionDiff(v1, v2) {
 }
 
 async function rollbackChVersion(versionId) {
-    if (!confirm('确定要回滚到版本 #' + versionId + ' 吗？当前内容会先自动保存为历史版本。')) return;
+    var displayNum = '';
+    _chVersions.forEach(function(v) { if (v.id === versionId) displayNum = v.project_version_num || v.id; });
+    if (!confirm('确定要回滚到版本 v' + displayNum + ' 吗？')) return;
     try {
         var resp = await fetch('/api/v1/projects/' + currentProjectId + '/chapters/' + currentChapterNum + '/versions/' + versionId + '/rollback?volume=' + currentVolumeNum, {method: 'POST'});
         var data = await resp.json();
         if (data.status === 'rolled_back') {
-            toast('已回滚到版本 #' + versionId + '，' + (data.word_count || 0) + '字', 'success');
+            toast('已回滚到 v' + displayNum + '，' + (data.word_count || 0) + '字', 'success');
             // 重新加载章节内容
             if (typeof loadChapter === 'function') loadChapter(currentChapterNum, currentVolumeNum);
             // 刷新版本列表（更新当前版本标识）
@@ -1747,11 +1973,13 @@ function renderOlVersionList() {
     _olVersionList.forEach(function(v) {
         var src = v.source || 'manual';
         var srcLabel = {manual:'手动保存', generate:'生成', pre_generate:'生成前', apply:'应用方案', pre_apply:'应用前', rollback:'回滚', pre_rollback:'回滚前'}[src] || src;
+        var displayNum = v.project_version_num || v.id;
         var isCurrent = _olCurrentVersionId && v.id === _olCurrentVersionId;
         html += '<div class="version-card" style="' + (isCurrent ? 'border:2px solid var(--ok);' : '') + '">';
-        html += '<h4><span>v' + v.id + '</span>';
+        html += '<h4><span>v' + displayNum + '</span>';
         if (isCurrent) html += '<span style="font-size:10px;background:var(--ok);color:#fff;padding:1px 6px;border-radius:8px;margin-left:6px">当前使用</span>';
-        html += '<span style="font-size:10px;color:var(--text-muted)">' + (v.volumes_count || 0) + '卷/' + (v.chapters_count || 0) + '章</span></h4>';
+        var volInfo = (v.volumes_count || 0) > 1 ? (v.volumes_count + '卷/') : '';
+        html += '<span style="font-size:10px;color:var(--text-muted)">' + volInfo + (v.chapters_count || 0) + '章</span></h4>';
         html += '<div class="vol-info">' + (v.created_at || '') + '</div>';
         html += '<div class="version-meta"><span class="tag">' + srcLabel + '</span>';
         if (v.change_summary) html += '<span class="tag accent">' + esc(v.change_summary).substring(0, 40) + '</span>';
@@ -1772,16 +2000,19 @@ async function previewOlVersion(versionId) {
         var data = await resp.json();
         var outline = data.outline_data || {};
         var volumes = outline.volumes || [];
-        var html = '<div style="padding:8px;background:var(--bg);border-radius:6px;max-height:300px;overflow-y:auto;font-size:12px">';
+        var showVolumes = volumes.length > 1 || (volumes.length === 1 && volumes[0].title);
+        var html = '<div style="padding:12px;background:var(--bg);border-radius:6px;max-height:60vh;overflow-y:auto;font-size:12px">';
         volumes.forEach(function(vol) {
-            html += '<div style="margin-bottom:8px"><strong>第' + (vol.volume_number || '?') + '卷: ' + esc(vol.title || '无标题') + '</strong>';
-            if (vol.arc_description) html += '<div style="color:var(--text-muted);font-size:11px;margin-top:2px">' + esc(vol.arc_description).substring(0, 100) + '</div>';
-            html += '</div>';
+            if (showVolumes) {
+                html += '<div style="margin-bottom:12px"><strong style="font-size:14px">第' + (vol.volume_number || '?') + '卷: ' + esc(vol.title || '无标题') + '</strong>';
+                if (vol.arc_description) html += '<div style="color:var(--text-muted);font-size:12px;margin-top:4px;line-height:1.6">' + esc(vol.arc_description) + '</div>';
+                html += '</div>';
+            }
             (vol.chapters || []).forEach(function(ch) {
-                html += '<div style="padding:2px 0 2px 12px;font-size:11px;border-left:2px solid var(--border);margin-left:4px">';
+                html += '<div style="padding:4px 0 4px 12px;font-size:12px;border-left:2px solid var(--border);margin-left:4px;line-height:1.5">';
                 html += '<span style="color:var(--text-muted)">Ch' + (ch.chapter_number || '?') + '</span> ';
-                html += esc(ch.title || '无标题');
-                if (ch.summary) html += '<span style="color:var(--text-muted)"> — ' + esc(ch.summary).substring(0, 50) + '</span>';
+                html += '<strong>' + esc(ch.title || '无标题') + '</strong>';
+                if (ch.summary) html += '<div style="color:var(--text-muted);font-size:11px;margin-top:2px;padding-left:28px">' + esc(ch.summary) + '</div>';
                 html += '</div>';
             });
         });
@@ -1793,12 +2024,14 @@ async function previewOlVersion(versionId) {
 }
 
 async function rollbackOlVersion(versionId) {
-    if (!confirm('确定要回滚大纲到版本 #' + versionId + ' 吗？当前大纲会先自动保存为历史版本。')) return;
+    var displayNum = '';
+    _olVersionList.forEach(function(v) { if (v.id === versionId) displayNum = v.project_version_num || v.id; });
+    if (!confirm('确定要回滚大纲到版本 v' + displayNum + ' 吗？')) return;
     try {
         var resp = await fetch('/api/v1/projects/' + currentProjectId + '/outline/versions/' + versionId + '/rollback', {method: 'POST'});
         var data = await resp.json();
         if (data.status === 'rolled_back') {
-            toast('大纲已回滚到版本 #' + versionId, 'success');
+            toast('大纲已回滚到 v' + displayNum, 'success');
             // 重新加载大纲
             if (typeof loadOutline === 'function') loadOutline();
             // 刷新版本列表（更新当前版本标识）

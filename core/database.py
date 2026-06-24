@@ -15,9 +15,63 @@ logger = get_logger(__name__)
 class DatabaseManager:
     """SQLite 数据库管理器。"""
 
+    # API Key 加密相关
+    _ENCRYPT_PREFIX = "enc:"
+
     def __init__(self, db_path: str = "data/novel.db") -> None:
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._encryption_key = self._derive_key()
+        self._init_wal_mode()
+
+    def _init_wal_mode(self) -> None:
+        """初始化 SQLite WAL 模式，提高并发性能."""
+        import sqlite3
+        try:
+            conn = sqlite3.connect(str(self._path))
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.close()
+            logger.debug("SQLite WAL 模式已启用", path=str(self._path))
+        except Exception as e:
+            logger.warning("SQLite WAL 模式启用失败", error=str(e))
+
+    @staticmethod
+    def _derive_key() -> bytes:
+        """从机器特征派生加密密钥."""
+        import hashlib
+        import platform
+        # 使用机器名 + 用户名作为密钥材料
+        seed = f"{platform.node()}-{platform.machine()}-novel-app-salt"
+        return hashlib.sha256(seed.encode()).digest()
+
+    def _encrypt(self, plaintext: str) -> str:
+        """加密 API Key."""
+        if not plaintext:
+            return plaintext
+        # 如果已经加密过，直接返回
+        if plaintext.startswith(self._ENCRYPT_PREFIX):
+            return plaintext
+        import base64
+        key = self._encryption_key
+        # XOR 加密
+        encrypted = bytes(b ^ key[i % len(key)] for i, b in enumerate(plaintext.encode('utf-8')))
+        return self._ENCRYPT_PREFIX + base64.urlsafe_b64encode(encrypted).decode('ascii')
+
+    def _decrypt(self, ciphertext: str) -> str:
+        """解密 API Key."""
+        if not ciphertext or not ciphertext.startswith(self._ENCRYPT_PREFIX):
+            return ciphertext
+        import base64
+        key = self._encryption_key
+        try:
+            encrypted = base64.urlsafe_b64decode(ciphertext[len(self._ENCRYPT_PREFIX):])
+            # XOR 解密
+            decrypted = bytes(b ^ key[i % len(key)] for i, b in enumerate(encrypted))
+            return decrypted.decode('utf-8')
+        except Exception:
+            return ciphertext  # 解密失败返回原值
 
     async def connect(self) -> None:
         import aiosqlite
@@ -87,6 +141,39 @@ class DatabaseManager:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )""",
+                """CREATE TABLE IF NOT EXISTS gate_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    chapter_number INTEGER NOT NULL,
+                    volume_number INTEGER DEFAULT 1,
+                    gate_name TEXT NOT NULL,
+                    verdict TEXT DEFAULT 'PASS',
+                    score REAL DEFAULT 1.0,
+                    issues_json TEXT DEFAULT '[]',
+                    created_at TEXT NOT NULL
+                )""",
+                """CREATE TABLE IF NOT EXISTS contributor_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    chapter_number INTEGER NOT NULL,
+                    volume_number INTEGER DEFAULT 1,
+                    contributor_name TEXT NOT NULL,
+                    summary TEXT DEFAULT '',
+                    issues_json TEXT DEFAULT '[]',
+                    suggestions_json TEXT DEFAULT '[]',
+                    score REAL,
+                    created_at TEXT NOT NULL
+                )""",
+                """CREATE TABLE IF NOT EXISTS optimization_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    chapter_number INTEGER NOT NULL,
+                    volume_number INTEGER DEFAULT 1,
+                    original_content TEXT DEFAULT '',
+                    optimized_content TEXT DEFAULT '',
+                    explanation_json TEXT DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                )""",
             ]:
                 await db.execute(sql)
 
@@ -108,8 +195,33 @@ class DatabaseManager:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_char ON characters(project_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_cv ON chapter_versions(project_id, chapter_number, volume_number)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_ov ON outline_versions(project_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_gr ON gate_results(project_id, chapter_number, volume_number)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_cr ON contributor_results(project_id, chapter_number, volume_number)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_or ON optimization_results(project_id, chapter_number, volume_number)")
             await db.commit()
+
+            # 迁移：加密现有的明文 API Key
+            await self._migrate_encrypt_keys(db)
+
         logger.info("SQLite 已连接", path=str(self._path))
+
+    async def _migrate_encrypt_keys(self, db) -> None:
+        """迁移：将现有的明文 API Key 加密."""
+        try:
+            cursor = await db.execute("SELECT name, api_key FROM providers")
+            rows = await cursor.fetchall()
+            updated = 0
+            for row in rows:
+                name, api_key = row[0], row[1]
+                if api_key and not api_key.startswith(self._ENCRYPT_PREFIX):
+                    encrypted = self._encrypt(api_key)
+                    await db.execute("UPDATE providers SET api_key=? WHERE name=?", (encrypted, name))
+                    updated += 1
+            if updated > 0:
+                await db.commit()
+                logger.info("API Key 加密迁移完成", count=updated)
+        except Exception as e:
+            logger.warning("API Key 加密迁移失败", error=str(e))
 
     async def close(self) -> None:
         pass
@@ -176,6 +288,20 @@ class DatabaseManager:
             if "change_summary" not in columns:
                 await db.execute("ALTER TABLE outline_versions ADD COLUMN change_summary TEXT DEFAULT ''")
 
+            # 添加项目内版本号列（每个项目独立递增）
+            if "project_version_num" not in columns:
+                await db.execute("ALTER TABLE outline_versions ADD COLUMN project_version_num INTEGER DEFAULT 0")
+                # 为已有记录填充项目内版本号
+                try:
+                    projects = await db.execute("SELECT DISTINCT project_id FROM outline_versions")
+                    pids = [r[0] for r in await projects.fetchall()]
+                    for pid in pids:
+                        rows = await db.execute("SELECT id FROM outline_versions WHERE project_id=? ORDER BY id ASC", (pid,))
+                        for i, row in enumerate(await rows.fetchall(), 1):
+                            await db.execute("UPDATE outline_versions SET project_version_num=? WHERE id=?", (i, row[0]))
+                except Exception:
+                    pass
+
             # 迁移旧列数据到新列（如果旧列存在）
             if "volume_count" in columns and "volumes_count" in columns:
                 await db.execute("UPDATE outline_versions SET volumes_count = volume_count WHERE volumes_count = 0 AND volume_count > 0")
@@ -227,6 +353,19 @@ class DatabaseManager:
             if "change_summary" not in columns:
                 await db.execute("ALTER TABLE chapter_versions ADD COLUMN change_summary TEXT DEFAULT ''")
 
+            # 添加项目内版本号列（每个项目独立递增）
+            if "project_version_num" not in columns:
+                await db.execute("ALTER TABLE chapter_versions ADD COLUMN project_version_num INTEGER DEFAULT 0")
+                # 为已有记录填充项目内版本号（按章节分组）
+                try:
+                    keys = await db.execute("SELECT DISTINCT project_id, chapter_number, volume_number FROM chapter_versions")
+                    for pid, chn, voln in await keys.fetchall():
+                        rows = await db.execute("SELECT id FROM chapter_versions WHERE project_id=? AND chapter_number=? AND volume_number=? ORDER BY id ASC", (pid, chn, voln))
+                        for i, row in enumerate(await rows.fetchall(), 1):
+                            await db.execute("UPDATE chapter_versions SET project_version_num=? WHERE id=?", (i, row[0]))
+                except Exception:
+                    pass
+
             await db.execute("CREATE INDEX IF NOT EXISTS idx_cv ON chapter_versions(project_id, chapter_number, volume_number)")
             await db.commit()
 
@@ -241,6 +380,14 @@ class DatabaseManager:
         import aiosqlite
         async with aiosqlite.connect(str(self._path)) as db:
             await db.execute(sql, params)
+            await db.commit()
+
+    async def _exec_many(self, statements: list[tuple[str, tuple]]) -> None:
+        """在同一事务中执行多条 SQL 语句，避免 DELETE+INSERT 之间的瞬态缺失窗口."""
+        import aiosqlite
+        async with aiosqlite.connect(str(self._path)) as db:
+            for sql, params in statements:
+                await db.execute(sql, params)
             await db.commit()
 
     # ---- Project ----
@@ -280,10 +427,104 @@ class DatabaseManager:
         await self._exec(f"UPDATE projects SET {sets} WHERE id=?", tuple(data.values()) + (pid,))
 
     async def delete_project(self, pid: str) -> None:
-        await self._exec("DELETE FROM chapters WHERE project_id=?", (pid,))
-        await self._exec("DELETE FROM characters WHERE project_id=?", (pid,))
-        await self._exec("DELETE FROM settings WHERE project_id=?", (pid,))
-        await self._exec("DELETE FROM projects WHERE id=?", (pid,))
+        await self._exec_many([
+            ("DELETE FROM optimization_results WHERE project_id=?", (pid,)),
+            ("DELETE FROM contributor_results WHERE project_id=?", (pid,)),
+            ("DELETE FROM gate_results WHERE project_id=?", (pid,)),
+            ("DELETE FROM chapter_versions WHERE project_id=?", (pid,)),
+            ("DELETE FROM chapters WHERE project_id=?", (pid,)),
+            ("DELETE FROM outline_versions WHERE project_id=?", (pid,)),
+            ("DELETE FROM outline_jobs WHERE project_id=?", (pid,)),
+            ("DELETE FROM characters WHERE project_id=?", (pid,)),
+            ("DELETE FROM settings WHERE project_id=?", (pid,)),
+            ("DELETE FROM projects WHERE id=?", (pid,)),
+        ])
+
+    # ---- Gate Results ----
+
+    async def save_gate_results(self, pid: str, ch_num: int, vol_num: int, gate_issues: list[dict]) -> None:
+        """保存门禁检查结果（先删旧的再插新的）."""
+        import json
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await self._exec("DELETE FROM gate_results WHERE project_id=? AND chapter_number=? AND volume_number=?",
+                         (pid, ch_num, vol_num))
+        for g in gate_issues:
+            await self._exec(
+                "INSERT INTO gate_results (project_id,chapter_number,volume_number,gate_name,verdict,score,issues_json,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (pid, ch_num, vol_num, g.get("gate", ""), g.get("verdict", "PASS"),
+                 g.get("score", 1.0), json.dumps(g.get("issues", []), ensure_ascii=False), now))
+
+    async def get_gate_results(self, pid: str, ch_num: int, vol_num: int = 1) -> list[dict]:
+        """获取章节的门禁检查结果."""
+        import json
+        rows = await self._fetch(
+            "SELECT gate_name, verdict, score, issues_json FROM gate_results WHERE project_id=? AND chapter_number=? AND volume_number=?",
+            (pid, ch_num, vol_num))
+        results = []
+        for r in rows:
+            issues = []
+            try:
+                issues = json.loads(r["issues_json"])
+            except Exception:
+                pass
+            results.append({"gate": r["gate_name"], "verdict": r["verdict"], "score": r["score"], "issues": issues})
+        return results
+
+    async def save_contributor_results(self, pid: str, ch_num: int, vol_num: int, results: list[dict]) -> None:
+        """保存流水线贡献者分析结果."""
+        import json
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await self._exec("DELETE FROM contributor_results WHERE project_id=? AND chapter_number=? AND volume_number=?",
+                         (pid, ch_num, vol_num))
+        for r in results:
+            await self._exec(
+                "INSERT INTO contributor_results (project_id,chapter_number,volume_number,contributor_name,summary,issues_json,suggestions_json,score,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (pid, ch_num, vol_num, r.get("name", ""), r.get("summary", ""),
+                 json.dumps(r.get("issues", []), ensure_ascii=False),
+                 json.dumps(r.get("suggestions", []), ensure_ascii=False),
+                 r.get("score"), now))
+
+    async def get_contributor_results(self, pid: str, ch_num: int, vol_num: int = 1) -> list[dict]:
+        """获取章节的贡献者分析结果."""
+        import json
+        rows = await self._fetch(
+            "SELECT contributor_name, summary, issues_json, suggestions_json, score FROM contributor_results WHERE project_id=? AND chapter_number=? AND volume_number=?",
+            (pid, ch_num, vol_num))
+        results = []
+        for r in rows:
+            issues = json.loads(r["issues_json"]) if r["issues_json"] else []
+            suggestions = json.loads(r["suggestions_json"]) if r["suggestions_json"] else []
+            results.append({"name": r["contributor_name"], "summary": r["summary"],
+                            "issues": issues, "suggestions": suggestions, "score": r["score"]})
+        return results
+
+    async def save_optimization_result(self, pid: str, ch_num: int, vol_num: int,
+                                        original: str, optimized: str, explanation: dict | None = None) -> None:
+        """保存编辑优化结果（覆盖同一章节的旧优化结果）."""
+        import json
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await self._exec("DELETE FROM optimization_results WHERE project_id=? AND chapter_number=? AND volume_number=?",
+                         (pid, ch_num, vol_num))
+        await self._exec(
+            "INSERT INTO optimization_results (project_id,chapter_number,volume_number,original_content,optimized_content,explanation_json,created_at) VALUES (?,?,?,?,?,?,?)",
+            (pid, ch_num, vol_num, original, optimized, json.dumps(explanation or {}, ensure_ascii=False), now))
+
+    async def get_optimization_result(self, pid: str, ch_num: int, vol_num: int = 1) -> dict | None:
+        """获取最近一次编辑优化结果."""
+        import json
+        rows = await self._fetch(
+            "SELECT original_content, optimized_content, explanation_json, created_at FROM optimization_results WHERE project_id=? AND chapter_number=? AND volume_number=? ORDER BY created_at DESC LIMIT 1",
+            (pid, ch_num, vol_num))
+        if not rows:
+            return None
+        r = rows[0]
+        explanation = {}
+        try:
+            explanation = json.loads(r["explanation_json"])
+        except Exception:
+            pass
+        return {"original": r["original_content"], "optimized": r["optimized_content"],
+                "explanation": explanation, "created_at": r["created_at"]}
 
     # ---- Chapter ----
 
@@ -309,10 +550,11 @@ class DatabaseManager:
                     )
             except Exception:
                 pass  # 快照失败不影响保存
-        await self._exec("DELETE FROM chapters WHERE id=?", (cid,))
-        await self._exec(
-            "INSERT INTO chapters (id,project_id,chapter_number,volume_number,title,content,word_count,ai_score,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            (cid, pid, num, volume, title, content, len(content), score, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        await self._exec_many([
+            ("DELETE FROM chapters WHERE id=?", (cid,)),
+            ("INSERT INTO chapters (id,project_id,chapter_number,volume_number,title,content,word_count,ai_score,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+             (cid, pid, num, volume, title, content, len(content), score, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))),
+        ])
 
     async def get_chapter(self, pid: str, num: int, volume: int = 1) -> dict | None:
         rows = await self._fetch("SELECT * FROM chapters WHERE project_id=? AND chapter_number=? AND volume_number=?", (pid, num, volume))
@@ -345,8 +587,10 @@ class DatabaseManager:
 
     async def save_provider(self, name: str, ptype: str, base_url: str, api_key: str, default_model: str, models: list | None = None) -> None:
         import json
+        # 加密 API Key
+        encrypted_key = self._encrypt(api_key)
         await self._exec("INSERT OR REPLACE INTO providers (name,type,base_url,api_key,default_model,models,enabled) VALUES (?,?,?,?,?,?,1)",
-                         (name, ptype, base_url, api_key, default_model, json.dumps(models or [])))
+                         (name, ptype, base_url, encrypted_key, default_model, json.dumps(models or [])))
 
     async def delete_provider(self, name: str) -> None:
         await self._exec("DELETE FROM providers WHERE name=?", (name,))
@@ -360,6 +604,9 @@ class DatabaseManager:
                     r["models"] = json.loads(r["models"])
                 except Exception:
                     r["models"] = []
+            # 解密 API Key
+            if r.get("api_key"):
+                r["api_key"] = self._decrypt(r["api_key"])
         return rows
 
     # ---- 已删除的配置 Provider 管理 ----
@@ -411,8 +658,9 @@ class DatabaseManager:
         auto_snapshot: bool = True,
         snapshot_source: str = "auto",
         snapshot_summary: str = "",
-    ) -> None:
-        """保存大纲 — 自动快照当前版本后再覆盖."""
+    ) -> int | None:
+        """保存大纲 — 自动快照当前版本后再覆盖，返回新版本ID."""
+        version_id = None
         if auto_snapshot:
             try:
                 current_settings = await self.get_settings(pid)
@@ -427,9 +675,23 @@ class DatabaseManager:
                     )
             except Exception:
                 pass  # 快照失败不影响保存
+
+        # 保存新版本到历史
+        try:
+            from core.version_manager import VersionManager
+            vm = VersionManager(self)
+            version_id = await vm.snapshot_outline(
+                pid, progress,
+                source=snapshot_source,
+                change_summary=snapshot_summary or f"保存({snapshot_source})",
+            )
+        except Exception:
+            pass  # 快照失败不影响保存
+
         settings = await self.get_settings(pid) or {}
         settings["progress"] = progress
         await self.save_settings(pid, settings)
+        return version_id
 
     async def get_settings(self, pid: str) -> dict:
         rows = await self._fetch("SELECT * FROM settings WHERE project_id=?", (pid,))
@@ -450,40 +712,55 @@ class DatabaseManager:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             async with aiosqlite.connect(str(self._path)) as db:
+                # 计算章节内版本号
+                row = await db.execute(
+                    "SELECT COALESCE(MAX(project_version_num), 0) FROM chapter_versions WHERE project_id=? AND chapter_number=? AND volume_number=?",
+                    (project_id, chapter_number, volume_number),
+                )
+                pvn = (await row.fetchone())[0] + 1
+
                 cursor = await db.execute(
-                    "INSERT INTO chapter_versions (project_id,chapter_id,chapter_number,volume_number,title,content,word_count,ai_score,source,change_summary,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (project_id, chapter_id, chapter_number, volume_number, title, content, word_count, ai_score, source, change_summary, now),
+                    "INSERT INTO chapter_versions (project_id,chapter_id,chapter_number,volume_number,title,content,word_count,ai_score,source,change_summary,created_at,project_version_num) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (project_id, chapter_id, chapter_number, volume_number, title, content, word_count, ai_score, source, change_summary, now, pvn),
                 )
                 await db.commit()
                 return cursor.lastrowid or 0
         except Exception:
             await self._ensure_version_tables()
             async with aiosqlite.connect(str(self._path)) as db:
+                row = await db.execute(
+                    "SELECT COALESCE(MAX(project_version_num), 0) FROM chapter_versions WHERE project_id=? AND chapter_number=? AND volume_number=?",
+                    (project_id, chapter_number, volume_number),
+                )
+                pvn = (await row.fetchone())[0] + 1
+
                 cursor = await db.execute(
-                    "INSERT INTO chapter_versions (project_id,chapter_id,chapter_number,volume_number,title,content,word_count,ai_score,source,change_summary,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (project_id, chapter_id, chapter_number, volume_number, title, content, word_count, ai_score, source, change_summary, now),
+                    "INSERT INTO chapter_versions (project_id,chapter_id,chapter_number,volume_number,title,content,word_count,ai_score,source,change_summary,created_at,project_version_num) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (project_id, chapter_id, chapter_number, volume_number, title, content, word_count, ai_score, source, change_summary, now, pvn),
                 )
                 await db.commit()
                 return cursor.lastrowid or 0
 
     async def list_chapter_versions(self, project_id: str, chapter_number: int, volume_number: int = 1) -> list[dict]:
         """列出某章节的所有历史版本（不含完整content，节省带宽）."""
+        cols = "id,project_id,chapter_id,chapter_number,volume_number,title,word_count,ai_score,source,change_summary,created_at,COALESCE(project_version_num,0) as project_version_num"
         try:
             return await self._fetch(
-                "SELECT id,project_id,chapter_id,chapter_number,volume_number,title,word_count,ai_score,source,change_summary,created_at FROM chapter_versions WHERE project_id=? AND chapter_number=? AND volume_number=? ORDER BY id DESC",
+                f"SELECT {cols} FROM chapter_versions WHERE project_id=? AND chapter_number=? AND volume_number=? ORDER BY id DESC",
                 (project_id, chapter_number, volume_number),
             )
         except Exception:
             await self._ensure_version_tables()
             return await self._fetch(
-                "SELECT id,project_id,chapter_id,chapter_number,volume_number,title,word_count,ai_score,source,change_summary,created_at FROM chapter_versions WHERE project_id=? AND chapter_number=? AND volume_number=? ORDER BY id DESC",
+                f"SELECT {cols} FROM chapter_versions WHERE project_id=? AND chapter_number=? AND volume_number=? ORDER BY id DESC",
                 (project_id, chapter_number, volume_number),
             )
 
     async def get_chapter_version(self, version_id: int) -> dict | None:
         """获取特定版本的完整内容."""
+        cols = "id,project_id,chapter_id,chapter_number,volume_number,title,content,word_count,ai_score,source,change_summary,created_at,COALESCE(project_version_num,0) as project_version_num"
         try:
-            rows = await self._fetch("SELECT * FROM chapter_versions WHERE id=?", (version_id,))
+            rows = await self._fetch(f"SELECT {cols} FROM chapter_versions WHERE id=?", (version_id,))
         except Exception:
             await self._ensure_version_tables()
             rows = await self._fetch("SELECT * FROM chapter_versions WHERE id=?", (version_id,))
@@ -519,13 +796,18 @@ class DatabaseManager:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             async with aiosqlite.connect(str(self._path)) as db:
+                # 计算项目内版本号
+                row = await db.execute("SELECT COALESCE(MAX(project_version_num), 0) FROM outline_versions WHERE project_id=?", (project_id,))
+                max_num = (await row.fetchone())[0]
+                pvn = max_num + 1
+
                 cursor = await db.execute(
-                    "INSERT INTO outline_versions (project_id,outline_data,volumes_count,chapters_count,source,change_summary,created_at) VALUES (?,?,?,?,?,?,?)",
-                    (project_id, outline_data, volumes_count, chapters_count, source, change_summary, now),
+                    "INSERT INTO outline_versions (project_id,outline_data,volumes_count,chapters_count,source,change_summary,created_at,project_version_num) VALUES (?,?,?,?,?,?,?,?)",
+                    (project_id, outline_data, volumes_count, chapters_count, source, change_summary, now, pvn),
                 )
                 await db.commit()
                 vid = cursor.lastrowid or 0
-                logger.info("保存大纲版本成功", version_id=vid, project_id=project_id, source=source)
+                logger.info("保存大纲版本成功", version_id=vid, project_id=project_id, source=source, project_version_num=pvn)
                 return vid
         except Exception as e:
             logger.warning("保存大纲版本失败，尝试建表重试", error=str(e))
@@ -538,16 +820,21 @@ class DatabaseManager:
                     cols = {row[1] for row in await pragma.fetchall()}
                 except Exception:
                     cols = set()
+                # 计算项目内版本号
+                row = await db.execute("SELECT COALESCE(MAX(project_version_num), 0) FROM outline_versions WHERE project_id=?", (project_id,))
+                max_num = (await row.fetchone())[0]
+                pvn = max_num + 1
+
                 if "data_json" in cols:
                     # 旧表：同时填充 data_json 和 outline_data
                     cursor = await db.execute(
-                        "INSERT INTO outline_versions (project_id,outline_data,data_json,volumes_count,chapters_count,source,change_summary,created_at) VALUES (?,?,?,?,?,?,?,?)",
-                        (project_id, outline_data, outline_data, volumes_count, chapters_count, source, change_summary, now),
+                        "INSERT INTO outline_versions (project_id,outline_data,data_json,volumes_count,chapters_count,source,change_summary,created_at,project_version_num) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (project_id, outline_data, outline_data, volumes_count, chapters_count, source, change_summary, now, pvn),
                     )
                 else:
                     cursor = await db.execute(
-                        "INSERT INTO outline_versions (project_id,outline_data,volumes_count,chapters_count,source,change_summary,created_at) VALUES (?,?,?,?,?,?,?)",
-                        (project_id, outline_data, volumes_count, chapters_count, source, change_summary, now),
+                        "INSERT INTO outline_versions (project_id,outline_data,volumes_count,chapters_count,source,change_summary,created_at,project_version_num) VALUES (?,?,?,?,?,?,?,?)",
+                        (project_id, outline_data, volumes_count, chapters_count, source, change_summary, now, pvn),
                     )
                 await db.commit()
                 vid = cursor.lastrowid or 0
@@ -556,22 +843,23 @@ class DatabaseManager:
 
     async def list_outline_versions(self, project_id: str) -> list[dict]:
         """列出项目大纲的所有历史版本（不含完整数据）."""
+        cols = "id,project_id,volumes_count,chapters_count,source,change_summary,created_at,COALESCE(project_version_num,0) as project_version_num"
         try:
             return await self._fetch(
-                "SELECT id,project_id,volumes_count,chapters_count,source,change_summary,created_at FROM outline_versions WHERE project_id=? ORDER BY id DESC",
+                f"SELECT {cols} FROM outline_versions WHERE project_id=? ORDER BY id DESC",
                 (project_id,),
             )
         except Exception:
             # 表可能不存在，尝试创建后重试
             await self._ensure_outline_tables()
             return await self._fetch(
-                "SELECT id,project_id,volumes_count,chapters_count,source,change_summary,created_at FROM outline_versions WHERE project_id=? ORDER BY id DESC",
+                f"SELECT {cols} FROM outline_versions WHERE project_id=? ORDER BY id DESC",
                 (project_id,),
             )
 
     async def get_outline_version(self, version_id: int) -> dict | None:
         """获取特定版本的大纲数据."""
-        cols = "id,project_id,outline_data,volumes_count,chapters_count,source,change_summary,created_at"
+        cols = "id,project_id,outline_data,volumes_count,chapters_count,source,change_summary,created_at,COALESCE(project_version_num,0)"
         try:
             rows = await self._fetch(f"SELECT {cols} FROM outline_versions WHERE id=?", (version_id,))
         except Exception:

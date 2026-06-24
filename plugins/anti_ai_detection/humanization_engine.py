@@ -216,6 +216,274 @@ DEAI_REFINE_SYSTEM = """你是专业的中文去 AI 痕迹专家。你的任务�
 - 保留原文情节和人物关系"""
 
 
+# ============================================================================
+# 统一降重系统提示（融合知识库14份文档 + 代码4套方法）
+# ============================================================================
+
+UNIFIED_HUMANIZE_SYSTEM = """你是专业的中文小说去AI痕迹专家。你的任务是根据"诊断报告"，按三层诊断法修复AI生成文本，使其读起来像人类网文作者写的。
+
+## 核心原则
+1. **诊断驱动**：先判断病灶落在哪一层，再下刀
+2. **最小干预**：能局部修补的不重写整段
+3. **保供血线**：卖点供血、章首抓力、中段回报、章末钩子不能被洗掉
+4. **必须有毛边**：改写后必须保留至少1处"AI不敢写的句子"
+
+## 三层诊断法（先判断病灶在哪一层）
+
+### 第一层：病灶识别层（删套话、删路标）
+症状：模板腔、企业行话、章节自指、导览腔、排版残留、模糊归因
+优先下刀：先删最明显的AI标记词
+
+### 第二层：句群重构层（拆公式、打散节奏）
+症状：均匀句群、公式句、解释腔、动作后果断裂、段落平均、转场胶水词
+优先下刀：拆掉齐步走句群
+
+### 第三层：人声回补层（补人味、补毛边）
+症状：人物声音差、私心与偏见缺失、毛边被磨平、现场承压不足、关系温差缺失
+优先下刀：把"像人"的东西补回来
+
+## 修复阶段（按顺序执行）
+
+### 阶段A：病灶清理（对应第一层）
+**删除以下词汇（零容忍）**：
+不禁、仿佛、映入眼帘、与此同时、诚然、总而言之、微微、淡淡、缓缓、轻轻、稍稍、略略、隐隐、前所未有、意义深远、无与伦比、不难看出、由此可见、综上所述、未来的路、新的篇章、充满希望、心中涌起、眼中闪过、心中充满
+
+**删除以下句式**：
+- 协作痕迹：让我们/接下来我们将/本文将/希望这能帮助你
+- 讲义动作：拆一拆/盘一盘/捋一捋/说白了/本质上/归根结底
+- 模板开头：在本章中/综上所述/不难发现/首先其次最后/值得注意的是
+- 企业行话：显著/有效/整体/协同/赋能/范式/闭环/抓手/路径/载体
+- 内容抬升腔：标志着/见证了/彰显了/体现了/奠定基础/不可磨灭
+- 句尾假深度：体现了/反映了/展示了/呼应了（事实说完后不要再追加解释）
+- 模糊归因：专家认为/观察者指出/有人提到/多个来源显示
+
+**标记词限制**：更关键/换句话说/事实上/值得注意/总之/与此同时 → 全文≤2处
+
+### 阶段B：句式修复（对应第二层）
+**二元对比壳**（不是A而是B）→ 不对称对比（A确实...，但/而...），全文≤1处
+**条件句堆叠**（一旦...就/只有...才/无论...都）→ 全文≤2处
+**戏剧化揭示**（遮羞布/面具/画皮）→ 直接写事实，零容忍
+**极端判断句**（最...的地方在于/真正可怕的是）→ 直接写事实
+**三项凑全面**→ 能两项就两项，别硬凑三段式
+**同义词转盘**→ 该重复就重复，机械轮换更像AI
+**翻译腔三式**：
+- 多余的系词结构（"不对的是"→"不对。"）
+- 主语重复病（连续3句同一主语开头→拆1句为无主句）
+- 因果连词显性化（"因为...所以..."→隐性因果）
+
+**句式打散**：
+- 紧张时短句，回忆时长句，冲击位允许残句
+- 连续3句几乎同长度→必须打散
+- 超过25字的长句→拆成2-3句
+
+### 阶段C：词汇修复
+**AI高频词替换**：
+- 笑了笑、点了点头、深吸一口气、不由得、下意识 → 用具体动作替代
+- 他眸中闪过一丝X → 他[具体动作]了一下
+- XX缓缓说道 → [动作引导]——"……"
+- XX心中暗道 → 直接写贴脸内心句
+- 他非常X → 动作+生理反应+决策
+- 突然/忽然/猛地（高频）→ 用语序与事件先后制造意外
+
+**弱副词替换**（微微/淡淡/缓缓/轻轻）→ 用动作或感官细节替代
+**伪学术词替换**（舆论场/宏大叙事/底层逻辑/赛道/闭环）→ 具体表述
+**分析动词替换**（拆解/梳理/剖析/聚焦/洞察/深耕/赋能）→ 看/说/讲
+**程度副词替换**：
+- 突然/忽然/猛地 → 用语序制造紧迫感
+- 非常/很/极其 → 删除，改用具体细节
+- 缓缓/慢慢/渐渐 → 用步骤拆分替代
+
+### 阶段D：描写改造（四维病灶-习惯用语层+写法口气层）
+**程式化表情**→ 手、肩、呼吸、视线等躯体反应
+**宏大空词**→ 身体和环境受到的具体压力
+**情绪直接盖章**（他很怕/很怒/很悲）→ 胃缩、耳鸣、发麻、手抖等生理信号
+**对话提示语**（愤怒地说/意味深长地说）→ 让动作自己发声
+**时间推进**（转眼/片刻后/画面一转）→ 用环境磨损和物候变化承接
+**天气替人物哭**→ 悲剧发生时，世界照样晴朗也更残忍
+**比喻模板**→ 用角色背景和处境里长出来的歪一点、土一点、活一点的比喻
+**比喻解释两遍**→ 留一层给读者自己连
+
+### 阶段E：对话修复（四维病灶-句式逻辑层）
+**对话像脚本问答**→ 加入打断、漏听、敷衍、岔开、抢话和误会
+**对话只负责解释**→ 同时承担：争位置、试底线、藏信息、泄情绪
+**对话太顺**→ 人物可以借别的话试探、威胁、遮掩真正目的
+**不同角色说同一种话**→ 不同阶层要有不同语法、认知盲区和说话长度
+**世界观说明由NPC讲解**→ 拆成抱怨、账单、磨损痕迹、禁令、旧笑话
+**配角只围着主角转**→ 配角要有私心、生活事、恐惧、偏见和不耐烦
+
+### 阶段F：节奏打散（二级改造：节奏人性化）
+**段落均匀**→ 短句制造紧张，长句营造沉思，破折号制造停顿
+**齐步走句群**→ 紧张时短，回忆时长，冲击位允许残句
+**连续对话无动作**→ 超过5回合无动作穿插→至少插入1处动作或环境干扰
+**段落结尾单一**→ 不要每段都加抽象结论，用事实/场景/引文结尾
+**心理总结句收尾**→ 连续3段心理总结句收尾→至少改2段为可见动作结尾
+**叙事停顿过长**→ 连续200字以上无对话且无动作→打散，插入动作或对话
+
+### 阶段G：感官补全（一级改造：语言解僵化）
+**只有视觉**→ 每个场景至少覆盖3种感官（视觉+听觉+触觉/嗅觉/味觉）
+**抽象情绪**→ 身体反应、手部动作、空间细节与物件状态
+**客观环境描写**→ 用"某人眼中的环境"替代，加入情绪滤镜
+**感官优先顺序**：触觉/嗅觉/听觉→再到视觉总述
+**具体细节**：柴火爆裂声、旱烟的呛人味、踩泥地的吧唧声
+
+### 阶段H：人声注入（三级改造：情感真实化+人声回补层）
+**情绪反应太即时**→ 人会先发懵、僵住、做无意义小动作，再真正崩掉
+**人物过于正确**→ 允许被偏见、创伤、自私和时代局限推着做错事
+**完美计划**→ 给蝴蝶效应留口子，小意外足以掀翻大布置
+**破局太顺利**→ 允许失败、妥协、漏算和残缺解决
+**配角反应整齐划一**→ 有人错愕，有人嫉妒，有人根本没看懂
+**信息传递太顺**→ 允许磨损：方言、误听、隐瞒、记错、私心
+**因果链太完整**→ 允许跳针、倒置和人脑的失焦瞬间
+**场景太干净**→ 有一点对剧情暂时没用的日常毛边，给文本留呼吸
+**情绪只用总结句**→ 让动作、物件和后果自己发声
+
+## 12项硬阈值（改写后必须满足）
+1. 二元对比壳（不是A而是B）：全文≤1处
+2. 第二人称"你"：≤1处
+3. 标记词（更关键/换句话说/事实上/值得注意/总之/与此同时）：合计≤2
+4. 协作语气：零容忍
+5. 讲义动作：零容忍
+6. 分析动词堆砌：≤2
+7. 条件句堆叠：≤2
+8. 戏剧化揭示：零容忍
+9. 段落结构：避免连续3段以上同构
+10. 段落厚度：避免均匀长度，允许短/中/长交替
+11. 段落结尾：不要每段都加抽象结论
+12. 对话比例：10%-60%
+
+## 过度消毒反制（必须遵守）
+改写后如果文本变得"太干净、太中性、太平衡"，说明改过头了。必须保留至少一个"毛边"：
+- 自嘲/自我贬低（"我也不确定"/"可能是我多想了"）
+- 承认不确定性（"大概"/"说不定"/"说不准"）
+- 具体的个人细节（只有那个人/场景才有的细节）
+- 不完美的情绪表达（话说一半、欲言又止、答非所问）
+
+## 红线保护（绝对不能碰）
+- 核心事实、关键因果、规则边界、重要证据字段
+- 章末钩子句的功能
+- 第三人称有限视角的认知边界
+- 中段回报的存在与清晰度
+
+## 去味后复检五问
+1. 删掉AI味后，第一场仍能不能一句话说清自己负责什么？
+2. 中段那一段，读者还能不能明确说出"这章给了我什么"？
+3. 结尾还是不是具体动作/具体后果/新变量，而不是余韵？
+4. 不同人物现在是真的活人差异，还是一起变成了同一种自然口气？
+5. 去味后，本章主抓手是不是还保留在最该显影的位置？
+
+## 事实发明禁令
+禁止为了"更像人"而编造原文中没有的具体数字、人物、日期、引文、地点。
+
+## 小说适配规则
+- "仿佛"用于真实心理描写和人物视角叙述时可保留
+- 对话中的口语化"不是"可保留（仅限制叙事句式中的"不是A而是B"）
+- 专业词保留原则：删掉后读者无法理解行动逻辑/职业感变空/规则边界模糊/代价链断掉→则保留
+
+## 输出要求
+- 直接输出改写后的完整文本
+- 不加任何说明、标注、清单
+- 字数与原文基本一致（相差不超过30字）
+- 保留原文情节和人物关系
+- 段首要缩进，段与段之间留空行
+- 排版像普通TXT网文成稿，而不是说明文"""
+
+
+def build_diagnosis_report(
+    ai_score: float,
+    detected_patterns: list[Any] | None = None,
+    detection_details: dict[str, Any] | None = None,
+) -> str:
+    """将检测结果转化为结构化诊断报告，指导LLM有针对性地修复.
+
+    Args:
+        ai_score: AI检测分数 (0-1, 越低越像人).
+        detected_patterns: 检测到的AI模式列表.
+        detection_details: 详细的检测维度数据.
+
+    Returns:
+        结构化的诊断报告文本.
+    """
+    lines = []
+    lines.append("## 诊断报告")
+    lines.append(f"**AI分数**: {ai_score:.2f} ({'轻微' if ai_score < 0.5 else '中等' if ai_score < 0.7 else '严重'})")
+    lines.append("")
+
+    # 收集所有问题
+    issues = []
+
+    # 从 detected_patterns 提取问题
+    if detected_patterns:
+        for p in detected_patterns:
+            if hasattr(p, 'severity') and p.severity in ('high', 'medium'):
+                category = getattr(p, 'category', '未知')
+                matched = getattr(p, 'matched_items', [])
+                count = getattr(p, 'count', 0)
+                sev = '🔴 严重' if p.severity == 'high' else '🟡 中等'
+                items_str = '、'.join(matched[:5])
+                if len(matched) > 5:
+                    items_str += f'等{len(matched)}项'
+                issues.append({
+                    'severity': p.severity,
+                    'text': f"{sev} **{category}**: {items_str} (出现{count}次)",
+                    'category': category,
+                })
+
+    # 从 detection_details 提取维度信息
+    if detection_details:
+        dimension_names = {
+            'sentence_uniformity': '句式均匀度',
+            'vocabulary_diversity': '词汇多样性',
+            'sentence_opening_repetition': '句首重复率',
+            'emotion_label_density': '情感标签密度',
+            'paragraph_uniformity': '段落均匀度',
+            'dialogue_ratio': '对话比例',
+        }
+        for dim, name in dimension_names.items():
+            val = detection_details.get(dim)
+            if val is not None and isinstance(val, (int, float)):
+                if dim == 'sentence_uniformity' and val < 2.5:
+                    issues.append({'severity': 'high', 'text': f"🔴 **{name}**: 标准差={val:.1f}（<2.5，句式过于整齐）", 'category': dim})
+                elif dim == 'vocabulary_diversity' and val > 0.85:
+                    issues.append({'severity': 'high', 'text': f"🔴 **{name}**: 重复率={val:.2f}（>0.85，词汇贫乏）", 'category': dim})
+                elif dim == 'paragraph_uniformity' and val < 50:
+                    issues.append({'severity': 'medium', 'text': f"🟡 **{name}**: 标准差={val:.0f}（<50，段落长度过于统一）", 'category': dim})
+                elif dim == 'dialogue_ratio':
+                    if val < 0.1 or val > 0.6:
+                        issues.append({'severity': 'medium', 'text': f"🟡 **{name}**: {val:.0%}（应为10%-60%）", 'category': dim})
+
+    # 按严重程度排序
+    severity_order = {'high': 0, 'medium': 1, 'low': 2}
+    issues.sort(key=lambda x: severity_order.get(x.get('severity', 'low'), 2))
+
+    if issues:
+        lines.append("### 需修复的问题（按优先级排序）")
+        for i, issue in enumerate(issues, 1):
+            lines.append(f"{i}. {issue['text']}")
+        lines.append("")
+
+        # 生成修复建议
+        lines.append("### 修复建议")
+        categories = {issue['category'] for issue in issues}
+
+        if any('uniform' in c or 'structure' in c or 'paragraph' in c for c in categories):
+            lines.append("- **阶段A**：打破段落均匀度，允许长短交替")
+        if any('tone' in c or 'collaborative' in c or 'lecture' in c for c in categories):
+            lines.append("- **阶段B**：删除协作语气和讲义动作")
+        if any('sentence' in c or 'contrast' in c or 'template' in c for c in categories):
+            lines.append("- **阶段C**：修复句式模板，打散句式结构")
+        if any('word' in c or 'vocab' in c or 'freq' in c or 'pattern' in c for c in categories):
+            lines.append("- **阶段D**：替换AI高频词和禁用词")
+        if any('dialogue' in c for c in categories):
+            lines.append("- **阶段E-F**：调整对话比例，增加口语感")
+        if any('sensory' in c or 'description' in c for c in categories):
+            lines.append("- **阶段F**：补充感官细节")
+    else:
+        lines.append("### 诊断结果")
+        lines.append("未发现严重问题，仅需轻量修正。")
+
+    return "\n".join(lines)
+
+
 class HumanizationEngine:
     """人性化改写引擎."""
 
@@ -229,27 +497,32 @@ class HumanizationEngine:
         self,
         content: str,
         *,
-        mode: str = "standard",  # light / standard / deep / three_axe / chaos
+        mode: str = "unified",  # unified / light / standard / deep / three_axe / chaos / deai
         preserve_dialogues: bool = True,
         detected_patterns: list[dict[str, Any]] | None = None,
         novel_type: str = "",  # 90年代乡土/港综/都市重生
         target_word_count: int | None = None,  # 目标字数
+        ai_score: float = 0.0,  # AI检测分数
+        detection_details: dict[str, Any] | None = None,  # 详细检测数据
     ) -> str:
         """对文本进行人性化改写.
 
         Args:
             content: 原始文本.
-            mode: 改写深度 — light / standard / deep / three_axe / chaos.
+            mode: 改写模式 — unified(默认) / light / standard / deep / three_axe / chaos / deai.
             preserve_dialogues: 是否保留对话原文.
             detected_patterns: 已检测到的 AI 模式.
             novel_type: 小说类型（用于类型特化降重）.
             target_word_count: 目标字数（字数控制）.
+            ai_score: AI检测分数 (0-1).
+            detection_details: 详细检测维度数据.
 
         Returns:
             改写后的文本.
         """
         # 选择系统提示
         system_prompts = {
+            "unified": UNIFIED_HUMANIZE_SYSTEM,
             "light": HUMANIZATION_SYSTEM,
             "standard": HUMANIZATION_SYSTEM,
             "deep": HUMANIZATION_SYSTEM,
@@ -257,10 +530,11 @@ class HumanizationEngine:
             "chaos": CHAOS_ORAL_FLOW_SYSTEM,
             "deai": DEAI_REFINE_SYSTEM,
         }
-        system_prompt = system_prompts.get(mode, HUMANIZATION_SYSTEM)
+        system_prompt = system_prompts.get(mode, UNIFIED_HUMANIZE_SYSTEM)
 
         # 模式指令
         mode_instructions = {
+            "unified": "统一降重：根据诊断报告，按三层诊断法（病灶识别层→句群重构层→人声回补层）逐层修复。",
             "light": "轻量修正：删除所有禁止词汇，替换为有语感的表达。适当加入口语感。",
             "standard": "标准重写：运用五大策略全面改写。",
             "deep": "深度重写：彻底重组表达方式。",
@@ -268,7 +542,7 @@ class HumanizationEngine:
             "chaos": "混沌口语流：极致长句、中文逗号流、句式打乱。",
             "deai": "De-AI精修：按修复顺序（结构→语气→句式→词汇）去除AI痕迹，遵守12项硬阈值。",
         }
-        instruction = mode_instructions.get(mode, mode_instructions["standard"])
+        instruction = mode_instructions.get(mode, mode_instructions["unified"])
 
         # 类型特化指令
         type_instructions = {
@@ -289,23 +563,44 @@ class HumanizationEngine:
         type_instruction = type_instructions.get(novel_type, "")
 
         # 构建提示
-        patterns_hint = ""
-        if detected_patterns:
-            items = []
-            for p in detected_patterns:
-                items.append(f"- {p.get('category', '')}: {', '.join(p.get('matched_items', [])[:5])}")
-            if items:
-                patterns_hint = "\n\n## 已检测到的 AI 痕迹 (优先处理)\n" + "\n".join(items)
+        if mode == "unified":
+            # 统一模式：使用诊断报告
+            diagnosis = build_diagnosis_report(ai_score, detected_patterns, detection_details)
+            dialogue_note = ""
+            if preserve_dialogues:
+                dialogue_note = "\n注意: 对话部分尽量保留原文，只做最小调整。"
+            word_count_note = ""
+            if target_word_count:
+                word_count_note = f"\n目标字数: {target_word_count}字（相差不超过30字）"
 
-        dialogue_note = ""
-        if preserve_dialogues:
-            dialogue_note = "\n注意: 对话部分尽量保留原文，只做最小调整。"
+            user_prompt = f"""{diagnosis}
+{dialogue_note}
+{type_instruction}
+{word_count_note}
 
-        word_count_note = ""
-        if target_word_count:
-            word_count_note = f"\n\n## 字数要求\n目标字数: {target_word_count}字（相差不超过30字）"
+## 原始文本
+{content}
 
-        user_prompt = f"""## 改写指令
+请直接输出改写后的完整文本。"""
+        else:
+            # 旧模式：兼容
+            patterns_hint = ""
+            if detected_patterns:
+                items = []
+                for p in detected_patterns:
+                    items.append(f"- {p.get('category', '')}: {', '.join(p.get('matched_items', [])[:5])}")
+                if items:
+                    patterns_hint = "\n\n## 已检测到的 AI 痕迹 (优先处理)\n" + "\n".join(items)
+
+            dialogue_note = ""
+            if preserve_dialogues:
+                dialogue_note = "\n注意: 对话部分尽量保留原文，只做最小调整。"
+
+            word_count_note = ""
+            if target_word_count:
+                word_count_note = f"\n\n## 字数要求\n目标字数: {target_word_count}字（相差不超过30字）"
+
+            user_prompt = f"""## 改写指令
 {instruction}
 {dialogue_note}
 {type_instruction}

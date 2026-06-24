@@ -164,6 +164,38 @@ DETECT_REDUCE_SYSTEM = """你是一位反AI检测专家。你需要对文本进�
 - 降重后字数应与原文相近（±10%）
 """
 
+EXPLAIN_SYSTEM = """你是一位资深网文编辑，正在向作者解释你的修改理由。
+
+## 任务
+对比原文和优化版，生成一份清晰的修改解释报告。
+
+## 输出格式（严格JSON）
+```json
+{
+  "summary": "用2-3句话概括本次优化做了什么、效果如何",
+  "quality_before": {"score": 65, "grade": "C", "issues": ["问题1", "问题2"]},
+  "quality_after": {"score": 85, "grade": "A", "improvements": ["改进1", "改进2"]},
+  "changes": [
+    {
+      "original_snippet": "原文片段（20-50字）",
+      "optimized_snippet": "优化后片段（20-50字）",
+      "reason": "为什么这样改",
+      "type": "ai_taste|writing|consistency|style|logic"
+    }
+  ],
+  "comparison": "两个版本的整体对比分析（100-200字）",
+  "recommendation": "建议采用哪个版本，为什么"
+}
+```
+
+## 要求
+- score 为 0-100 的整数，grade 为 S/A/B/C/D 之一
+- changes 列出所有有意义的修改（最多10条），每条要具体说明改了什么、为什么改
+- comparison 要客观分析两个版本的优劣
+- recommendation 要给出明确建议
+- 用中文回答，语言要专业但易懂
+"""
+
 
 def create_manifest() -> PluginManifest:
     return PluginManifest(
@@ -208,7 +240,8 @@ class PipelineEditorPlugin:
         *,
         volume_number: int = 1,
         ai_threshold: float = 0.3,
-        humanize_mode: str = "standard",
+        humanize_mode: str = "unified",
+        gate_issues: list[dict] | None = None,
     ) -> dict:
         """执行优化流水线.
 
@@ -220,7 +253,7 @@ class PipelineEditorPlugin:
             steps: 要执行的步骤，默认全部执行
             volume_number: 卷号
             ai_threshold: AI率阈值，超过则降重
-            humanize_mode: 降重模式
+            humanize_mode: 降重模式（默认unified统一模式）
 
         Returns:
             流水线执行结果，包含每步的A/B对比数据
@@ -246,10 +279,36 @@ class PipelineEditorPlugin:
             except Exception:
                 pass
 
+        # 运行门禁链和流水线贡献者插件
+        contributor_results = []
+        if self._kernel:
+            # 如果没有外部传入的门禁结果，先从 DB 读，没有则运行门禁链
+            if not gate_issues and project_id and self._kernel.db:
+                try:
+                    gate_issues = await self._kernel.db.get_gate_results(project_id, chapter_num, volume_number)
+                except Exception:
+                    pass
+            if not gate_issues:
+                gate_issues = await self._run_gate_chain(content, project_id)
+            # 贡献者结果：先从 DB 读，没有则运行插件
+            if project_id and self._kernel.db:
+                try:
+                    contributor_results = await self._kernel.db.get_contributor_results(project_id, chapter_num, volume_number)
+                except Exception:
+                    pass
+            if not contributor_results:
+                contributor_results = await self._run_contributors(content, project_id, chapter_num, platform)
+            if contributor_results:
+                for cr in contributor_results:
+                    if cr.get("summary"):
+                        context_info += f"\n[{cr['name']}]: {cr['summary']}"
+                    for s in (cr.get("suggestions") or []):
+                        context_info += f"\n  - {s}"
+
         # Step 1: AI编辑批注
         if "annotate" in steps:
             logger.info("流水线步骤1: AI编辑批注")
-            annotate_result = await self._annotate(content, platform, context_info)
+            annotate_result = await self._annotate(content, platform, context_info, gate_issues=gate_issues)
             result["steps"].append(annotate_result)
             result["current_content"] = annotate_result.get("optimized", content)
 
@@ -280,20 +339,172 @@ class PipelineEditorPlugin:
             result["steps"].append(detect_result)
             result["current_content"] = detect_result.get("optimized", result["current_content"])
 
+        # 生成综合解释报告
+        if result["steps"] and self._kernel:
+            try:
+                explanation = await self._generate_explanation(
+                    result["original"], result["current_content"], result["steps"]
+                )
+                result["explanation"] = explanation
+            except Exception as e:
+                logger.warning(f"生成解释报告失败: {e}")
+                result["explanation"] = None
+
         return result
 
-    async def _annotate(self, content: str, platform: str, context_info: str) -> dict:
+    async def _generate_explanation(self, original: str, optimized: str, steps: list[dict]) -> dict | None:
+        """生成综合解释报告 — 对比原文和优化版，解释修改原因."""
+        try:
+            # 收集各步骤的关键信息
+            step_summaries = []
+            for s in steps:
+                name = s.get("name", s.get("step", ""))
+                summary = s.get("summary", "")
+                step_summaries.append(f"- {name}: {summary}")
+
+            # 截取文本（避免过长）
+            orig_short = original[:3000] if len(original) > 3000 else original
+            opt_short = optimized[:3000] if len(optimized) > 3000 else optimized
+
+            prompt = f"""请对比以下原文和优化版，生成修改解释报告。
+
+## 执行的优化步骤
+{chr(10).join(step_summaries)}
+
+## 原文（前3000字）
+{orig_short}
+
+## 优化版（前3000字）
+{opt_short}
+
+请按照系统提示的JSON格式返回报告。注意：只返回纯JSON，不要用代码块包裹。"""
+
+            resp = await self._kernel.call_llm(
+                [{"role": "system", "content": EXPLAIN_SYSTEM}, {"role": "user", "content": prompt}],
+                tier="standard", max_tokens=2000,
+            )
+            content = resp.get("content", "")
+            return self._parse_json_response(content)
+        except Exception as e:
+            logger.warning(f"解释报告生成异常: {e}")
+        return None
+
+    @staticmethod
+    def _parse_json_response(text: str) -> dict | None:
+        """从 LLM 响应中提取并解析 JSON，处理各种格式问题."""
+        if not text:
+            return None
+        # 1. 去掉代码块包裹
+        text = re.sub(r'```(?:json)?\s*', '', text)
+        text = re.sub(r'```\s*', '', text)
+        text = text.strip()
+        # 2. 尝试直接解析
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        # 3. 用正则提取最外层 JSON 对象（非贪婪匹配第一个完整的 {}）
+        try:
+            depth = 0
+            start = -1
+            for i, ch in enumerate(text):
+                if ch == '{':
+                    if depth == 0: start = i
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0 and start >= 0:
+                        candidate = text[start:i + 1]
+                        # 清理常见问题：尾部逗号
+                        candidate = re.sub(r',\s*([}\]])', r'\1', candidate)
+                        try:
+                            return json.loads(candidate)
+                        except json.JSONDecodeError:
+                            start = -1  # 继续找下一个
+        except Exception:
+            pass
+        # 4. 最后尝试：清理后整体解析
+        try:
+            cleaned = re.sub(r',\s*([}\]])', r'\1', text)
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+        logger.warning("无法解析 LLM 返回的 JSON")
+        return None
+
+    async def _run_gate_chain(self, content: str, project_id: str) -> list[dict]:
+        """运行所有 IQualityGate 插件，返回门禁结果."""
+        from core.quality_gate import GateChainExecutor, GateChainConfig, IQualityGate
+        try:
+            gates = []
+            for entry in await self._kernel._plugin_manager.list_active():
+                if isinstance(entry.instance, IQualityGate):
+                    gates.append(entry.instance)
+            if not gates:
+                return []
+            chain = GateChainExecutor(GateChainConfig(gates=gates))
+            gate_result = await chain.execute(
+                {"content": content, "project_id": project_id},
+                {"project_id": project_id},
+            )
+            return [
+                {"gate": g.gate_name, "verdict": g.verdict.value, "score": g.score,
+                 "issues": [{"severity": i.severity.value, "code": i.code, "message": i.message, "suggestion": i.suggestion}
+                            for i in g.issues]}
+                for g in gate_result.gates
+            ]
+        except Exception as e:
+            logger.warning(f"门禁链执行失败: {e}")
+            return []
+
+    async def _run_contributors(self, content: str, project_id: str, chapter_num: int, platform: str) -> list[dict]:
+        """并行运行所有 IPipelineContributor 插件，返回分析结果."""
+        import asyncio
+        from core.quality_gate import IPipelineContributor
+        try:
+            contributors = []
+            for entry in await self._kernel._plugin_manager.list_active():
+                if isinstance(entry.instance, IPipelineContributor):
+                    contributors.append(entry.instance)
+            if not contributors:
+                return []
+            ctx = {"project_id": project_id, "chapter_num": chapter_num, "platform": platform, "kernel": self._kernel}
+            tasks = [c.analyze(content, ctx) for c in contributors]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            output = []
+            for c, r in zip(contributors, results):
+                if isinstance(r, Exception):
+                    logger.warning(f"贡献者 {c.name} 执行失败: {r}")
+                    continue
+                r["name"] = c.name
+                output.append(r)
+            return output
+        except Exception as e:
+            logger.warning(f"贡献者执行失败: {e}")
+            return []
+
+    async def _annotate(self, content: str, platform: str, context_info: str, gate_issues: list[dict] | None = None) -> dict:
         """AI编辑批注."""
         try:
             # 规则预检
             rule_issues = self._rule_based_check(content)
+
+            # 门禁问题提示
+            gate_hint = ""
+            if gate_issues:
+                issues_text = []
+                for g in gate_issues:
+                    for i in g.get("issues", []):
+                        issues_text.append(f"- [{g.get('gate', '')}] {i.get('code', '')}: {i.get('message', '')}")
+                if issues_text:
+                    gate_hint = "\n## 门禁检测发现的问题（必须重点修复）\n" + "\n".join(issues_text) + "\n"
 
             # LLM批注
             user_prompt = f"""请审阅以下小说文本，找出问题并给出修改建议。
 
 ## 平台: {platform}
 {context_info}
-
+{gate_hint}
 ## 文本
 {content}
 
@@ -311,7 +522,19 @@ class PipelineEditorPlugin:
             )
 
             raw = resp.get("content", "{}")
-            annotations = self._parse_json_response(raw)
+            parsed = self._parse_json_response(raw)
+
+            # 处理LLM返回的格式：可能是列表，也可能是包含annotations键的对象
+            if isinstance(parsed, dict):
+                annotations = parsed.get("annotations", parsed.get("results", []))
+                if not isinstance(annotations, list):
+                    annotations = []
+            elif isinstance(parsed, list):
+                annotations = parsed
+            else:
+                annotations = []
+
+            logger.debug("AI编辑批注解析结果", parsed_type=type(parsed).__name__, annotations_count=len(annotations))
 
             # 合并规则检测结果
             if rule_issues:
@@ -449,7 +672,7 @@ class PipelineEditorPlugin:
 
     async def _detect_reduce(
         self, content: str, platform: str, context_info: str,
-        ai_threshold: float = 0.3, humanize_mode: str = "standard",
+        ai_threshold: float = 0.3, humanize_mode: str = "unified",
         prev_ai_detection: dict | None = None,
     ) -> dict:
         """AI检测降重 — 使用 TextTransformer 统一入口."""
@@ -574,23 +797,32 @@ class PipelineEditorPlugin:
         except json.JSONDecodeError:
             pass
 
-        # 尝试提取JSON块
-        json_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\}|\[[\s\S]*?\])\s*```', raw)
+        # 尝试提取 ```json ... ``` 代码块（贪婪匹配）
+        json_match = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', raw)
         if json_match:
             try:
                 return json.loads(json_match.group(1))
             except json.JSONDecodeError:
                 pass
 
-        # 尝试找第一个JSON对象或数组
+        # 尝试找第一个JSON对象或数组（按括号配对）
         for start_char, end_char in [('{', '}'), ('[', ']')]:
             start = raw.find(start_char)
-            end = raw.rfind(end_char)
-            if start >= 0 and end > start:
-                try:
-                    return json.loads(raw[start:end + 1])
-                except json.JSONDecodeError:
-                    continue
+            if start < 0:
+                continue
+            # 找到对应的闭合括号
+            depth = 0
+            for i in range(start, len(raw)):
+                if raw[i] == start_char:
+                    depth += 1
+                elif raw[i] == end_char:
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(raw[start:i + 1])
+                        except json.JSONDecodeError:
+                            break
+                        break
 
         logger.warning("无法解析JSON响应", raw_preview=raw[:200])
         return [] if raw.strip().startswith('[') else {}

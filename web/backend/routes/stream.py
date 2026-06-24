@@ -36,7 +36,7 @@ def _job_key(pid: str, vol: int, ch: int) -> str:
 _outline_jobs: dict[str, dict] = {}
 
 
-async def _run_outline_generation(pid: str, num_versions: int = 3):
+async def _run_outline_generation(pid: str, num_versions: int = 3, num_volumes: int | None = None):
     """后台执行大纲生成 — 通过 GenerationService 统一入口."""
     from core.generation_service import GenerationService, STYLE_HINTS
 
@@ -44,9 +44,10 @@ async def _run_outline_generation(pid: str, num_versions: int = 3):
         kernel = await get_kernel()
         gs = GenerationService(kernel)
         versions = []
+        gen_tasks: list = []  # 存储 asyncio.Task 引用，用于外部取消
         _outline_jobs[pid] = {
             "status": "generating", "versions": versions, "current": 0, "total": num_versions,
-            "message": "正在分析项目...", "ts": time.time(),
+            "message": "正在分析项目...", "ts": time.time(), "tasks": gen_tasks,
         }
 
         if kernel.db:
@@ -54,12 +55,11 @@ async def _run_outline_generation(pid: str, num_versions: int = 3):
 
         # 通过 GenerationService 生成多版本
         async def on_progress(vi: int, result):
-            _outline_jobs[pid]["current"] = vi + 1
-            _outline_jobs[pid]["message"] = f"正在生成版本 {vi + 1}/{num_versions}..."
+            # 检查取消请求
+            if _outline_jobs.get(pid, {}).get("cancel_requested"):
+                raise asyncio.CancelledError("用户取消大纲生成")
+
             _outline_jobs[pid]["ts"] = time.time()
-            if kernel.db:
-                await kernel.db.save_outline_job(pid, "generating", num_versions, vi + 1, versions,
-                    f"正在生成版本 {vi + 1}/{num_versions}...")
 
             if result.success:
                 total_chs = sum(len(v.get("chapters", [])) for v in result.progress.get("volumes", []))
@@ -71,24 +71,47 @@ async def _run_outline_generation(pid: str, num_versions: int = 3):
                     "style_tag": style_tag,
                 }
                 versions.append(version_data)
-                if kernel.db:
-                    await kernel.db.save_outline_job(pid, "generating", num_versions, vi + 1, versions,
-                        f"已生成 {len(versions)}/{num_versions} 个版本...")
 
-        await gs.generate_outline_versions(pid, num_versions=num_versions, on_progress=on_progress)
+            # 用已完成数量作为进度（并行生成时完成顺序不确定）
+            done_count = len(versions)
+            _outline_jobs[pid]["current"] = done_count
+            _outline_jobs[pid]["message"] = f"已生成 {done_count}/{num_versions} 个版本..."
+            if kernel.db:
+                await kernel.db.save_outline_job(pid, "generating", num_versions, done_count, versions,
+                    f"已生成 {done_count}/{num_versions} 个版本...")
+
+        await gs.generate_outline_versions(pid, num_versions=num_versions, volumes=num_volumes,
+                                            on_progress=on_progress, tasks_ref=gen_tasks)
 
         _outline_jobs[pid]["status"] = "done"
         _outline_jobs[pid]["message"] = f"生成完成，共 {len(versions)} 个方案"
         _outline_jobs[pid]["ts"] = time.time()
+        _outline_jobs[pid].pop("tasks", None)  # 清理任务引用
         if kernel.db:
             await kernel.db.save_outline_job(pid, "done", num_versions, num_versions, versions,
                 f"生成完成，共 {len(versions)} 个方案")
 
+    except asyncio.CancelledError:
+        # 用户取消
+        if pid in _outline_jobs:
+            _outline_jobs[pid]["status"] = "cancelled"
+            _outline_jobs[pid]["message"] = f"已取消，已生成 {len(versions)} 个方案"
+            _outline_jobs[pid]["ts"] = time.time()
+            _outline_jobs[pid].pop("tasks", None)  # 清理任务引用
+        if kernel.db:
+            try:
+                await kernel.db.save_outline_job(pid, "cancelled", num_versions,
+                    _outline_jobs.get(pid, {}).get("current", 0),
+                    versions,
+                    f"已取消，已生成 {len(versions)} 个方案")
+            except Exception:
+                pass
     except Exception as e:
         if pid in _outline_jobs:
             _outline_jobs[pid]["status"] = "error"
             _outline_jobs[pid]["message"] = f"生成失败: {str(e)[:200]}"
             _outline_jobs[pid]["ts"] = time.time()
+            _outline_jobs[pid].pop("tasks", None)  # 清理任务引用
         if kernel.db:
             try:
                 await kernel.db.save_outline_job(pid, "error", num_versions,
@@ -97,6 +120,55 @@ async def _run_outline_generation(pid: str, num_versions: int = 3):
                     f"生成失败: {str(e)[:200]}")
             except Exception:
                 pass
+
+
+async def _auto_revise_from_gate(kernel, pid: str, ch_num: int, vol_num: int, content: str, gate_issues: list[dict], job_key: str):
+    """门禁发现问题后自动调用 pipeline_editor 修订章节."""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # 收集需要修复的问题
+    problems = []
+    for g in gate_issues:
+        for issue in g.get("issues", []):
+            if issue.get("severity") in ("error", "critical"):
+                problems.append(f"[{g['gate']}] {issue['message']}")
+    if not problems:
+        return
+
+    logger.info("门禁自动修订: 第%d章 发现 %d 个高严重度问题，开始修订", ch_num, len(problems))
+
+    try:
+        plugin = await kernel.get_plugin("pipeline-editor")
+        result = await plugin.instance.run_pipeline(
+            content=content,
+            project_id=pid,
+            chapter_num=ch_num,
+            volume_number=vol_num,
+            steps=["annotate", "coach"],  # 只跑编辑批注+写作优化，不做降重
+            gate_issues=gate_issues,
+        )
+        revised = result.get("current_content", "")
+        if not revised or revised == content:
+            logger.info("门禁自动修订: 无实质改动，跳过保存")
+            return
+
+        # 保存修订后的版本（自动快照旧版本）
+        cid = f"ch_v{vol_num:02d}_{ch_num:04d}"
+        if kernel.db:
+            await kernel.db.save_chapter(
+                cid, pid, ch_num, f"第{ch_num}章", revised,
+                volume=vol_num, snapshot_source="gate_auto_revise",
+                snapshot_summary=f"门禁自动修订（{len(problems)}个问题）",
+            )
+        await kernel.write_project_file(pid, f"chapters/{cid}.md", revised)
+
+        # 更新任务状态
+        _chapter_jobs[job_key]["content"] = revised
+        _chapter_jobs[job_key]["word_count"] = len(revised)
+        logger.info("门禁自动修订完成: 第%d章，修订后 %d 字", ch_num, len(revised))
+    except Exception as e:
+        logger.warning("门禁自动修订异常: %s", e)
 
 
 async def _run_chapter_generation(pid: str, ch_num: int, vol_num: int):
@@ -161,10 +233,74 @@ async def _run_chapter_generation(pid: str, ch_num: int, vol_num: int):
         writer_settings = {"meta": settings, "platform": platform}
         if genre_tags:
             writer_settings["genre_tags"] = genre_tags
+
+        # 写作技巧检索（知识包）
+        writing_tips = []
+        try:
+            tip_query = node.get("summary", "") or f"第{ch_num}章写作技巧"
+            writing_tips = await kernel.rag_retrieve(
+                query=tip_query, project_id=pid, top_k=3, categories=["writing_tip"],
+            )
+        except Exception:
+            pass
+
+        # 按篇幅注入方法论包 + 通用写作技巧包 + 题材技能包
+        _METHOD_PACKS = {"short": "short-story-writing", "medium": "novel-writing", "long": "novel-templates", "extra_long": "novel-templates"}
+        _UNIVERSAL_PACKS = ["writing-master", "writing-tutorial", "writing-workflow", "novel-writing-skills"]
+        _GENRE_SKILL_MAP = {
+            "都市": "都市职场", "职场": "都市职场",
+            "悬疑": "悬疑推理", "推理": "悬疑推理",
+            "都市悬疑": "都市悬疑",
+            "科幻": "AI科幻", "AI": "AI科幻",
+            "太空": "太空科幻",
+            "赛博朋克": "赛博庞克", "赛博": "赛博庞克",
+            "言情": "女频爱情", "女频": "女频爱情", "爱情": "女频爱情",
+            "异能": "异能志怪", "志怪": "异能志怪", "灵异": "异能志怪",
+        }
+        try:
+            from pathlib import Path
+            def _read_pack(name):
+                pack_dir = Path("knowledge_base/packs") / name / "content"
+                if not pack_dir.exists():
+                    return []
+                out = []
+                for f in sorted(pack_dir.glob("*.md")):
+                    text = f.read_text(encoding="utf-8").strip()
+                    if text:
+                        out.append({"content": text, "category": "writing_tip", "metadata": {"source": f"pack:{name}", "file": f.name}})
+                return out
+
+            length = settings.get("length", "long") if settings else "long"
+            method_tips = _read_pack(_METHOD_PACKS.get(length, "novel-templates"))
+            for name in _UNIVERSAL_PACKS:
+                method_tips.extend(_read_pack(name))
+            # 题材技能包
+            loaded_genres = set()
+            for tag in genre_tags:
+                dir_name = _GENRE_SKILL_MAP.get(tag)
+                if not dir_name or dir_name in loaded_genres:
+                    continue
+                loaded_genres.add(dir_name)
+                skill_dir = Path("knowledge_base/genre_skills") / dir_name
+                if not skill_dir.exists():
+                    continue
+                prompt_file = skill_dir / ".github" / "prompts" / "创建小说正文.prompt.md"
+                if prompt_file.exists():
+                    text = prompt_file.read_text(encoding="utf-8").strip()
+                    if text:
+                        if "---" in text[1:]:
+                            parts = text.split("---", 2)
+                            text = parts[2].strip() if len(parts) > 2 else text
+                        method_tips.append({"content": text[:2000], "category": "writing_tip", "metadata": {"source": f"genre:{dir_name}", "file": "创建小说正文.prompt.md"}})
+            writing_tips = method_tips + writing_tips
+        except Exception:
+            pass
+
         prompt = cw.instance._build_user_prompt(node, {
             "characters": chars, "previous_chapters_summary": prev,
             "genre_tags": genre_tags, "settings": writer_settings,
             "active_foreshadows": active_foreshadows,
+            "writing_tips": writing_tips,
         }, platform, "", "")
 
         system_prompt = cw.instance._build_system_prompt(platform)
@@ -177,34 +313,112 @@ async def _run_chapter_generation(pid: str, ch_num: int, vol_num: int):
             _chapter_jobs[key]["content"] = full
             _chapter_jobs[key]["tokens"].append(token)
 
-        # 保存到数据库 + 文件（save_chapter 自动快照旧版本）
+        # LLM 生成完成，立即保存并通知前端
         cid = f"ch_v{vol_num:02d}_{ch_num:04d}"
         if kernel.db:
             await kernel.db.save_chapter(
                 cid, pid, ch_num, node.get("title", f"第{ch_num}章"), full,
                 volume=vol_num, snapshot_source="generate", snapshot_summary="流式生成新版本前自动快照",
             )
-            await kernel.db.update_project(pid, {"current_chapter": max(ch_num, 0), "updated_at": ""})
+            from datetime import datetime
+            await kernel.db.update_project(pid, {"current_chapter": max(ch_num, 0), "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
         await kernel.write_project_file(pid, f"chapters/{cid}.md", full)
 
-        # 更新一致性账本
-        try:
-            from core.orchestrator import update_consistency_ledger_standalone
-            await update_consistency_ledger_standalone(kernel, pid, full, ch_num, vol_num)
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning("账本更新失败: %s", exc)
-
-        # 自动提取伏笔
-        try:
-            await cw.instance._extract_and_save_foreshadows(pid, full, ch_num)
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning("伏笔提取失败: %s", exc)
-
+        # 立即设置 saved 状态，让前端更新大纲树
         _chapter_jobs[key]["status"] = "saved"
         _chapter_jobs[key]["word_count"] = len(full)
         _chapter_jobs[key]["ts"] = time.time()
+
+        # 后续处理（门禁检查、账本更新、伏笔提取）异步执行，不阻塞前端
+        async def _post_process():
+            try:
+                # 门禁链检查
+                gate_issues = []
+                from core.quality_gate import GateChainExecutor, GateChainConfig, IQualityGate, GateVerdict
+                gates = []
+                for entry in await kernel._plugin_manager.list_active():
+                    if isinstance(entry.instance, IQualityGate):
+                        gates.append(entry.instance)
+                if gates:
+                    chain = GateChainExecutor(GateChainConfig(gates=gates))
+                    gate_result = await chain.execute(
+                        {"content": full},
+                        {"settings": settings, "characters": chars, "facts": {}, "foreshadows": {}},
+                    )
+                    gate_issues = [
+                        {"gate": g.gate_name, "verdict": g.verdict.value, "score": g.score, "issues": [
+                            {"severity": i.severity.value, "code": i.code, "message": i.message}
+                            for i in g.issues
+                        ]}
+                        for g in gate_result.gates
+                    ]
+                    _chapter_jobs[key]["gate_issues"] = gate_issues
+                    # 持久化到数据库
+                    if gate_issues and kernel.db:
+                        try:
+                            await kernel.db.save_gate_results(pid, ch_num, vol_num, gate_issues)
+                        except Exception:
+                            pass
+
+                    # 门禁发现问题时自动修订（仅当有 REVISE 裁决且含高严重度问题时）
+                    has_revise = any(g.verdict == GateVerdict.REVISE for g in gate_result.gates)
+                    has_high = any(
+                        i.severity.value in ("error", "critical")
+                        for g in gate_result.gates for i in g.issues
+                    )
+                    if has_revise and has_high:
+                        try:
+                            await _auto_revise_from_gate(kernel, pid, ch_num, vol_num, full, gate_issues, key)
+                        except Exception as exc:
+                            import logging
+                            logging.getLogger(__name__).warning("门禁自动修订失败: %s", exc)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("门禁链检查失败: %s", exc)
+
+            try:
+                # 更新一致性账本
+                from core.orchestrator import update_consistency_ledger_standalone
+                await update_consistency_ledger_standalone(kernel, pid, full, ch_num, vol_num)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("账本更新失败: %s", exc)
+
+            try:
+                # 自动提取伏笔
+                await cw.instance._extract_and_save_foreshadows(pid, full, ch_num, vol_num)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("伏笔提取失败: %s", exc)
+
+            # 运行流水线贡献者插件（IPipelineContributor），结果存 DB 供编辑优化时使用
+            try:
+                import asyncio as _aio
+                from core.quality_gate import IPipelineContributor
+                contributors = []
+                for entry in await kernel._plugin_manager.list_active():
+                    if isinstance(entry.instance, IPipelineContributor):
+                        contributors.append(entry.instance)
+                if contributors:
+                    platform = await kernel.context().get(f"project:{pid}", "platform", "fanqie")
+                    ctx = {"project_id": pid, "chapter_num": ch_num, "volume_number": vol_num, "platform": platform, "kernel": kernel}
+                    tasks = [c.analyze(full, ctx) for c in contributors]
+                    results = await _aio.gather(*tasks, return_exceptions=True)
+                    cr_list = []
+                    for c, r in zip(contributors, results):
+                        if isinstance(r, Exception):
+                            logging.getLogger(__name__).warning("贡献者 %s 失败: %s", c.name, r)
+                            continue
+                        r["name"] = c.name
+                        cr_list.append(r)
+                    if cr_list and kernel.db:
+                        await kernel.db.save_contributor_results(pid, ch_num, vol_num, cr_list)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("贡献者执行失败: %s", exc)
+
+        # 异步执行后续处理，不阻塞
+        asyncio.create_task(_post_process())
 
     except Exception as e:
         _chapter_jobs[key]["status"] = "error"
@@ -389,6 +603,7 @@ async def outline_generate_async(data: dict):
     """
     pid = data.get("project_id", "")
     num_versions = data.get("versions", 3)
+    num_volumes = data.get("volumes")  # 1=不分卷, None=自动分卷
     if not pid:
         return {"error": "需要 project_id"}
 
@@ -411,11 +626,11 @@ async def outline_generate_async(data: dict):
                 "ts": time.time(),
             }
             # 重新启动生成任务，从上次完成的版本继续
-            asyncio.create_task(_run_outline_generation(pid, num_versions))
+            asyncio.create_task(_run_outline_generation(pid, num_versions, num_volumes))
             return {"status": "resumed", "message": "恢复中断的大纲生成"}
 
     # 启动后台任务
-    asyncio.create_task(_run_outline_generation(pid, num_versions))
+    asyncio.create_task(_run_outline_generation(pid, num_versions, num_volumes))
     return {"status": "started", "message": "大纲生成已启动"}
 
 
@@ -456,6 +671,21 @@ async def outline_status(pid: str):
                 "from_db": True,
             }
 
+    return {"status": "not_found", "message": "没有进行中的大纲生成任务"}
+
+
+@router.post("/api/v1/outline/cancel/{pid}")
+async def outline_cancel(pid: str):
+    """取消正在进行的大纲生成任务 — 立即取消所有子任务."""
+    if pid in _outline_jobs and _outline_jobs[pid].get("status") == "generating":
+        _outline_jobs[pid]["cancel_requested"] = True
+        _outline_jobs[pid]["message"] = "正在取消..."
+        # 立即取消所有正在运行的 asyncio 任务
+        tasks = _outline_jobs[pid].get("tasks", [])
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        return {"status": "cancelling", "message": "已发送取消请求"}
     return {"status": "not_found", "message": "没有进行中的大纲生成任务"}
 
 

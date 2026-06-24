@@ -56,9 +56,9 @@ llm:
       description: "经济模型 — 提取关键词、建立知识索引（最便宜）"
 
   # 重试设置
-  request_timeout: 120
-  max_retries: 3
-  retry_base_delay: 2.0
+  request_timeout: 300
+  max_retries: 2
+  retry_base_delay: 3.0
 
   # Prompt 缓存 (仅 Claude)
   prompt_cache:

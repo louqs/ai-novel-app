@@ -24,9 +24,9 @@
             <div class="form-group">
                 <label for="length">篇幅</label>
                 <select id="length" name="length" onchange="updateWordRange()">
-                    <option value="short">短篇 (1-5万字 · 约30章)</option>
-                    <option value="medium" selected>中篇 (5-15万字 · 约150章)</option>
-                    <option value="long">长篇 (15-50万字 · 约500章)</option>
+                    <option value="short">短篇 (1-5万字)</option>
+                    <option value="medium" selected>中篇 (5-15万字)</option>
+                    <option value="long">长篇 (15-50万字)</option>
                     <option value="extra_long">超长篇 (50万字以上)</option>
                 </select>
             </div>
@@ -105,6 +105,16 @@
         <div class="form-group">
             <label>每章目标字数</label>
             <input type="number" id="edit-target-words" style="width:100%" min="1000" max="10000" step="500" placeholder="3000">
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>最低字数</label>
+                <input type="number" id="edit-min-words" style="width:100%" min="1000" placeholder="留空按篇幅默认">
+            </div>
+            <div class="form-group">
+                <label>最高字数</label>
+                <input type="number" id="edit-max-words" style="width:100%" min="1000" max="7000000" placeholder="留空按篇幅默认">
+            </div>
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
             <button class="btn" onclick="closeEditModal()">取消</button>

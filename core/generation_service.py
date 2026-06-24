@@ -106,7 +106,8 @@ class GenerationService:
                     data.target_words_per_chapter, data.min_words, data.max_words,
                 )
             if volumes is None:
-                volumes = max(2, total_chapters // 25)
+                length_enum = NovelLength(data.length) if data.length in NovelLength.__members__.values() else NovelLength.LONG
+                volumes = length_enum.default_volumes(total_chapters)
 
             logger.info("大纲参数", project_id=project_id, length=data.length,
                         total_chapters=total_chapters, volumes=volumes)
@@ -127,6 +128,7 @@ class GenerationService:
                 platform=data.platform,
                 total_chapters=total_chapters,
                 volumes=volumes,
+                target_words_per_chapter=data.target_words_per_chapter,
             )
 
             progress_dict = progress_model.model_dump() if hasattr(progress_model, 'model_dump') else progress_model
@@ -149,30 +151,87 @@ class GenerationService:
         total_chapters: int | None = None,
         volumes: int | None = None,
         on_progress: Callable[[int, OutlineResult], Awaitable[None]] | None = None,
+        tasks_ref: list | None = None,
     ) -> list[OutlineResult]:
-        """生成多个风格变体.
+        """生成多个风格变体（并行生成，大幅提速）.
 
         Args:
             project_id: 项目 ID
             num_versions: 生成数量
             on_progress: 进度回调 (version_index, result)
+            tasks_ref: 可选列表，用于接收 asyncio.Task 引用以便外部取消
         """
-        results = []
-        for i in range(num_versions):
+        import asyncio
+
+        # 预加载项目数据（只需加载一次，避免重复读取）
+        data = await self.load_project_data(project_id)
+
+        # 根据项目篇幅自动决定章节数和卷数
+        if total_chapters is None:
+            length_enum = NovelLength(data.length) if data.length in NovelLength.__members__.values() else NovelLength.LONG
+            total_chapters = length_enum.default_chapters(
+                data.target_words_per_chapter, data.min_words, data.max_words,
+            )
+            if total_chapters > 500:
+                logger.warning("章节数超过上限，截断到 500",
+                               requested=total_chapters, min_words=data.min_words, max_words=data.max_words)
+                total_chapters = 500
+        if volumes is None:
+            length_enum = NovelLength(data.length) if data.length in NovelLength.__members__.values() else NovelLength.LONG
+            volumes = length_enum.default_volumes(total_chapters)
+
+        tc = total_chapters
+        vol = volumes
+
+        logger.info("大纲版本参数", project_id=project_id, length=data.length,
+                    min_words=data.min_words, max_words=data.max_words,
+                    target_words_per_chapter=data.target_words_per_chapter,
+                    total_chapters=tc, volumes=vol, num_versions=num_versions)
+
+        async def _gen_one(i: int) -> tuple[int, OutlineResult]:
             hint = STYLE_HINTS[i % len(STYLE_HINTS)]
             temp = STYLE_TEMPERATURES[i % len(STYLE_TEMPERATURES)]
 
-            result = await self.generate_outline(
-                project_id,
-                style_hint=hint,
-                temperature=temp,
-                total_chapters=total_chapters,
-                volumes=volumes,
-            )
-            results.append(result)
+            direction = dict(data.direction)
+            if hint:
+                direction["style_hint"] = hint
 
+            try:
+                entry = await self._kernel.get_plugin("outline-planner")
+                if not entry or not entry.instance:
+                    raise RuntimeError("outline-planner 插件未加载")
+
+                progress_model = await entry.instance.plan_outline(
+                    settings=data.settings,
+                    characters=data.characters,
+                    direction=direction,
+                    platform=data.platform,
+                    total_chapters=tc,
+                    volumes=vol,
+                    target_words_per_chapter=data.target_words_per_chapter,
+                )
+                progress_dict = progress_model.model_dump() if hasattr(progress_model, 'model_dump') else progress_model
+                return i, OutlineResult(success=True, progress=progress_dict, style_hint=hint, temperature=temp)
+            except asyncio.CancelledError:
+                logger.info("大纲版本生成被取消", version=i)
+                return i, OutlineResult(success=False, error="已取消")
+            except Exception as e:
+                logger.error("大纲版本生成失败", version=i, error=str(e))
+                return i, OutlineResult(success=False, error=str(e))
+
+        # 并行启动所有版本生成
+        tasks = [asyncio.create_task(_gen_one(i)) for i in range(num_versions)]
+        # 将 tasks 引用暴露给调用方，以便外部取消
+        if tasks_ref is not None:
+            tasks_ref.extend(tasks)
+        results: list[OutlineResult] = [None] * num_versions  # type: ignore
+
+        # 按完成顺序回调进度
+        for coro in asyncio.as_completed(tasks):
+            idx, result = await coro
+            results[idx] = result
             if on_progress:
-                await on_progress(i, result)
+                await on_progress(idx, result)
 
         return results
 
@@ -183,8 +242,12 @@ class GenerationService:
     async def save_outline(
         self, project_id: str, progress: dict[str, Any], *,
         snapshot_source: str = "auto", snapshot_summary: str = "",
-    ) -> None:
-        """保存大纲到 3 个存储（context + file + DB，DB 自动快照旧版本）."""
+    ) -> int | None:
+        """保存大纲到 3 个存储（context + file + DB，DB 自动快照旧版本）.
+
+        Returns:
+            版本ID，如果保存失败则返回 None
+        """
         ns = f"project:{project_id}"
 
         # Context
@@ -196,15 +259,18 @@ class GenerationService:
             project_id, "progress.json", json.dumps(progress, ensure_ascii=False, indent=2),
         )
 
-        # DB（save_outline 自动快照旧版本）
+        # DB（save_outline 自动快照旧版本并保存新版本）
+        version_id = None
         if self._kernel.db:
-            await self._kernel.db.save_outline(
+            version_id = await self._kernel.db.save_outline(
                 project_id, progress,
                 snapshot_source=snapshot_source, snapshot_summary=snapshot_summary,
             )
 
         # 同步大纲伏笔到 foreshadows.json
         await self.sync_outline_foreshadows(project_id, progress)
+
+        return version_id
 
     async def snapshot_outline(
         self,
@@ -228,6 +294,8 @@ class GenerationService:
         将 foreshadow_plants 写入为 status="planted", source="outline" 的条目，
         这样正文生成时这些伏笔会出现在 prompt 的"需要推进的伏笔"段落中。
         已存在的大纲伏笔（按 description 去重）不会重复创建。
+
+        同时处理 foreshadow_payoffs，将匹配的伏笔标记为 status="paid"。
         """
         import json
         import uuid
@@ -248,9 +316,12 @@ class GenerationService:
         }
 
         new_count = 0
+        paid_count = 0
         for vol in progress.get("volumes", []):
             for ch in vol.get("chapters", []):
                 ch_num = ch.get("chapter_number", 0)
+
+                # 处理新伏笔 (foreshadow_plants)
                 for plant in ch.get("foreshadow_plants", []):
                     plant_desc = plant.strip() if isinstance(plant, str) else str(plant).strip()
                     if not plant_desc or plant_desc in existing_descs:
@@ -271,13 +342,56 @@ class GenerationService:
                     existing_descs.add(plant_desc)
                     new_count += 1
 
-        if new_count > 0:
+                # 处理伏笔回收 (foreshadow_payoffs)
+                for payoff in ch.get("foreshadow_payoffs", []):
+                    payoff_desc = payoff.strip() if isinstance(payoff, str) else str(payoff).strip()
+                    if not payoff_desc:
+                        continue
+                    # 尝试匹配已有伏笔（通过描述中的关键词）
+                    for fs_id, fs in entries.items():
+                        if not isinstance(fs, dict) or fs.get("status") == "paid":
+                            continue
+                        fs_desc = fs.get("description", "")
+                        # 检查伏笔回收描述是否包含伏笔描述的关键部分
+                        # 或者伏笔回收描述中的伏笔编号是否匹配
+                        if self._foreshadow_matches_payoff(fs_desc, payoff_desc):
+                            entries[fs_id]["status"] = "paid"
+                            entries[fs_id]["paid_chapter"] = ch_num
+                            entries[fs_id]["payoff_description"] = payoff_desc
+                            paid_count += 1
+                            break
+
+        if new_count > 0 or paid_count > 0:
             foreshadows["entries"] = entries
             await self._kernel.write_project_file(
                 project_id, "foreshadows.json",
                 json.dumps(foreshadows, ensure_ascii=False, indent=2),
             )
-            logger.info("大纲伏笔已同步", project_id=project_id, new_count=new_count)
+            logger.info("大纲伏笔已同步", project_id=project_id, new_count=new_count, paid_count=paid_count)
+
+    def _foreshadow_matches_payoff(self, fs_desc: str, payoff_desc: str) -> bool:
+        """判断伏笔回收描述是否匹配某个伏笔."""
+        import re
+
+        # 提取伏笔描述中的编号（如 "伏笔#1"）
+        fs_match = re.search(r'伏笔#?(\d+)', fs_desc)
+        payoff_match = re.search(r'伏笔#?(\d+)', payoff_desc)
+
+        if fs_match and payoff_match:
+            # 如果都有编号，比较编号
+            return fs_match.group(1) == payoff_match.group(1)
+
+        # 否则检查关键词重叠
+        fs_keywords = set(re.findall(r'[一-鿿]{2,}', fs_desc))
+        payoff_keywords = set(re.findall(r'[一-鿿]{2,}', payoff_desc))
+
+        # 如果有超过50%的关键词重叠，认为匹配
+        if fs_keywords and payoff_keywords:
+            overlap = fs_keywords & payoff_keywords
+            if len(overlap) >= min(len(fs_keywords), len(payoff_keywords)) * 0.5:
+                return True
+
+        return False
 
     # ==================================================================
     # 加载项目数据
@@ -298,9 +412,21 @@ class GenerationService:
                     data.title = meta.get("title", "")
                     data.length = meta.get("length", "long")
                     data.target_words_per_chapter = meta.get("target_words_per_chapter", 3000)
-                    data.min_words = meta.get("min_words")
-                    data.max_words = meta.get("max_words")
                     import json
+                    # 从 meta_json 补充字段（min_words/max_words 等存在 meta_json 中）
+                    meta_json = meta.get("meta_json")
+                    if meta_json and isinstance(meta_json, str):
+                        try:
+                            extra = json.loads(meta_json)
+                            data.min_words = extra.get("min_words")
+                            data.max_words = extra.get("max_words")
+                            if not data.target_words_per_chapter or data.target_words_per_chapter == 3000:
+                                data.target_words_per_chapter = extra.get("target_words_per_chapter", 3000)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    else:
+                        data.min_words = meta.get("min_words")
+                        data.max_words = meta.get("max_words")
                     genre_str = meta.get("genre_tags", "[]")
                     data.genre_tags = json.loads(genre_str) if isinstance(genre_str, str) else genre_str
             except Exception:

@@ -85,6 +85,35 @@ class IQualityGate(ABC):
         ...
 
 
+class IPipelineContributor(ABC):
+    """可向编辑优化流水线注入分析结果的插件接口.
+
+    与 IQualityGate 不同，此接口用于"分析/建议"型插件（如写作技能提取、风格分析等），
+    返回的分析结果会被注入到编辑优化的 prompt 中，辅助 LLM 做出更好的优化决策。
+    """
+
+    name: str
+    order: int = 50  # 执行顺序，越小越先
+
+    @abstractmethod
+    async def analyze(self, content: str, context: dict[str, Any]) -> dict[str, Any]:
+        """分析文本，返回结构化的分析结果.
+
+        Args:
+            content: 待分析的文本内容
+            context: {"project_id": str, "chapter_num": int, "platform": str, "kernel": IKernelAPI, ...}
+
+        Returns:
+            {
+                "summary": str,           # 分析总结（1-2句话）
+                "issues": list[str],      # 发现的问题列表
+                "suggestions": list[str], # 改进建议列表
+                "score": float | None,    # 可选评分 0-1
+            }
+        """
+        ...
+
+
 # =============================================================================
 # 门禁链配置与执行器
 # =============================================================================
