@@ -189,7 +189,7 @@ async function peStartSingle(pid) {
 
     peState.chapterNum = chNum;
     peState.volumeNum = volNum;
-    peSetRunning(true, '正在优化第' + chNum + '章（可能需要1-3分钟）...');
+    peSetRunning(true, '优化中，请耐心等待（约1-3分钟）...');
 
     try {
         var resp = await fetch('/api/v1/projects/' + pid + '/pipeline/optimize', {
@@ -225,7 +225,8 @@ async function peStartBatch(pid, range) {
 
     peState.batchRunning = true;
     peState.batchCancelled = false;
-    peSetRunning(true, '批量优化中...');
+    var rangeLabel = range === 'all' ? '整个项目' : '选中章节';
+    peSetRunning(true, '正在优化' + rangeLabel + '，共' + selected.length + '章（约' + selected.length * 2 + '-' + selected.length * 3 + '分钟）...');
     document.getElementById('pe-batch-prog').style.display = 'block';
 
     var total = selected.length, done = 0, failed = 0;
