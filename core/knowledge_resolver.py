@@ -226,6 +226,24 @@ def ratio_range(key: str, genre_tags: list[str] | None,
     return parsed if parsed else default
 
 
+def overdue_gap(length: str | None, genre_tags: list[str] | None) -> int:
+    """伏笔超期阈值（章）：篇幅定基线，体裁靶值可进一步收紧（取 min，不放松）.
+
+    - 基线随篇幅：短篇 4 / 中篇 8 / 长篇 20 / 超长 30。
+    - 体裁靶值 `伏笔超期阈值` 若给定且更小，则采用更小值（短篇悬疑不会被放松）。
+    """
+    from models.foreshadow import overdue_gap_for_length
+
+    base = overdue_gap_for_length(length)
+    raw = threshold("伏笔超期阈值", genre_tags, default=None)
+    if isinstance(raw, str):
+        import re as _re
+        nums = _re.findall(r"\d+", raw)
+        if nums:
+            return min(base, int(nums[0]))
+    return base
+
+
 __all__ = [
     "resolve_genre_dirs",
     "genre_targets",
@@ -235,6 +253,7 @@ __all__ = [
     "threshold",
     "parse_range",
     "ratio_range",
+    "overdue_gap",
 ]
 
 

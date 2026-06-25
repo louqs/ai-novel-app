@@ -202,7 +202,9 @@ async def _run_chapter_generation(pid: str, ch_num: int, vol_num: int):
                 last_part = prev_content[-800:] if len(prev_content) > 800 else prev_content
                 prev = f"【第{vol_num}卷第{ch_num-1}章结尾（供参考，不必强制衔接）】\n{last_part}\n\n"
             summaries = []
-            for n in range(max(1, ch_num - 6), ch_num):
+            from models.project import memory_windows
+            _sum_window, _ = memory_windows(settings.get("length", "long") if settings else "long")
+            for n in range(max(1, ch_num - _sum_window), ch_num):
                 ch = await kernel.db.get_chapter(pid, n, vol_num)
                 if ch:
                     content = ch.get("content", "")
@@ -217,16 +219,20 @@ async def _run_chapter_generation(pid: str, ch_num: int, vol_num: int):
                 prev += "【注意】本章为独立生成（前序章节尚未创作），请根据大纲自行建立场景和人物关系，确保内容自洽。\n\n"
 
         genre_tags = settings.get("genre_tags", []) if settings else []
-        # 加载活跃伏笔
+        # 加载活跃伏笔（阶段3：按优先级+距今章数排序，超期标记，只注入最相关若干条）
+        # 超期阈值随篇幅+体裁自适应（短篇收得紧）
         active_foreshadows = []
         try:
             import json as _json
+            from models.foreshadow import rank_active_foreshadows
+            from core.knowledge_resolver import overdue_gap as _overdue_gap
+            _length = settings.get("length", "long") if settings else "long"
+            _gap = _overdue_gap(_length, genre_tags)
             raw = await kernel.read_project_file(pid, "foreshadows.json")
             fs_data = _json.loads(raw)
-            active_foreshadows = [
-                fs for fs in fs_data.get("entries", {}).values()
-                if isinstance(fs, dict) and fs.get("status") in ("planted", "building")
-            ]
+            active_foreshadows = rank_active_foreshadows(
+                fs_data.get("entries", {}), ch_num, overdue_gap=_gap
+            )
         except (FileNotFoundError, json.JSONDecodeError):
             pass
         # 构建完整 settings 供 chapter_writer 读取 target_words_per_chapter 等

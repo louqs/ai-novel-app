@@ -47,6 +47,7 @@ class PipelineContext:
     state: ChapterPipelineState = ChapterPipelineState.IDLE
     revision_round: int = 0
     max_revisions: int = 3
+    length: str = "long"  # 项目篇幅，用于记忆窗口/伏笔阈值的篇幅自适应
 
     # 组装后的上下文
     outline_node: dict[str, Any] | None = None
@@ -291,22 +292,43 @@ class OrchestrationEngine:
             ctx.writing_tips = []
 
         # 活跃伏笔（从文件读取，ContextManager 中无持久化数据）
+        # 阶段3：按优先级 + 埋设距今章数智能排序，只注入最相关的若干条，避免全量淹没 LLM；
+        #        过久未推进的标记为「超期」，主动冒泡提示该回收。超期阈值随篇幅+体裁自适应。
         try:
+            from models.foreshadow import rank_active_foreshadows
+
+            # 取篇幅+体裁，算超期阈值（短篇收得紧）
+            gap = 20
+            try:
+                from core.knowledge_resolver import overdue_gap as _overdue_gap
+                length, genre_tags = "long", []
+                if kernel.db:
+                    meta = await kernel.db.get_project(ctx.project_id)
+                    if meta:
+                        length = meta.get("length", "long")
+                        tags_raw = meta.get("genre_tags", "[]")
+                        genre_tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+                ctx.length = length  # 供记忆窗口等篇幅自适应复用
+                gap = _overdue_gap(length, genre_tags)
+            except Exception:
+                pass
+
             raw = await kernel.read_project_file(ctx.project_id, "foreshadows.json")
             foreshadows = json.loads(raw)
             if foreshadows:
-                ctx.active_foreshadows = [
-                    fs for fs in foreshadows.get("entries", {}).values()
-                    if isinstance(fs, dict) and fs.get("status") in ("planted", "building")
-                ]
+                ctx.active_foreshadows = rank_active_foreshadows(
+                    foreshadows.get("entries", {}), ctx.chapter_number or 0, overdue_gap=gap
+                )
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
-        # 事实账本
+        # 事实账本（窗口随篇幅自适应：短篇收紧，避免旧事实淹没）
         try:
+            from models.project import memory_windows
+            _, facts_window = memory_windows(ctx.length)
             facts = await kernel.context().get(f"project:{ctx.project_id}", "facts")
             if facts:
-                ctx.relevant_facts = list(facts.get("entries", {}).values())[-20:]  # 最近20条
+                ctx.relevant_facts = list(facts.get("entries", {}).values())[-facts_window:]
         except Exception:
             pass
 
@@ -324,11 +346,13 @@ class OrchestrationEngine:
         kernel = self._kernel
         chapter_writer = await kernel.get_plugin("chapter-writer")
 
-        # 构建上下文 — 使用卷+章组合键获取近6章摘要
+        # 构建上下文 — 近期章节摘要窗口随篇幅自适应（短篇收紧）
         prev_summary = ""
         if ctx.chapter_number > 1:
+            from models.project import memory_windows
+            summary_window, _ = memory_windows(ctx.length)
             summaries = []
-            for n in range(max(1, ctx.chapter_number - 6), ctx.chapter_number):
+            for n in range(max(1, ctx.chapter_number - summary_window), ctx.chapter_number):
                 s = await kernel.context().get(
                     f"project:{ctx.project_id}", f"summary_vol{ctx.volume_number}_ch{n}", ""
                 )

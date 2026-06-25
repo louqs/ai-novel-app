@@ -109,7 +109,18 @@
       "Bash(awk '{print $5\\\\\"字节\\\\\", $NF}')",
       "Bash(find \"D:\\\\vibe coding\\\\ai-novel-app\" -path \"*/\\\\.venv\" -prune -o -type f -name \"*.py\" -print)",
       "Bash(xargs grep -l \"foreshadow\")",
-      "Bash(xargs grep -l 'foreshadow')"
+      "Bash(xargs grep -l 'foreshadow')",
+      "Bash(python -m pytest tests/test_foreshadow_match.py -v)",
+      "Bash(python -m pytest tests/test_foreshadow_match.py -q)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('plugins/chapter_writer/plugin.py',encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(python -c \"from core import orchestrator, generation_service; from plugins.chapter_writer import plugin as c; from plugins.foreshadow_manager import plugin as f; from plugins.outline_planner import plugin as o; from models import foreshadow; print\\('全部导入OK'\\)\")",
+      "Bash(python -m pytest tests/test_foreshadow_match.py tests/test_knowledge_resolver.py -q)",
+      "Bash(ls core/length_scaling.py)",
+      "Bash(grep -l \"scaled_chapters\\\\|def scaled\" core/length_scaling.py)",
+      "Bash(grep -n \"overdue_gap_for\\\\|scaled_chapters\\\\|def overdue\" models/foreshadow.py)",
+      "Bash(grep -n \"def overdue_gap\\\\|overdue_gap\" core/knowledge_resolver.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('models/foreshadow.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('core/knowledge_resolver.py',encoding='utf-8'\\).read\\(\\)\\); print\\('语法OK'\\)\")",
+      "Bash(python -c \"from core import orchestrator; from models import project; import importlib; importlib.import_module\\('web.backend.routes.stream'\\); print\\('导入OK'\\)\")"
     ]
   }
 }

@@ -59,7 +59,18 @@ class ForeshadowManagerPlugin(IQualityGate):
 
         issues: list[GateIssue] = []
 
-        # 检查: 距上次推进超过 20 章的活跃伏笔
+        # 超期阈值随篇幅+体裁自适应（短篇收得紧，长篇可拖久；不再写死 20）
+        settings = context.get("settings", {}) or {}
+        meta = settings.get("meta", {}) if isinstance(settings, dict) else {}
+        length = settings.get("length") or (meta.get("length") if isinstance(meta, dict) else None)
+        genre_tags = settings.get("genre_tags") or (meta.get("genre_tags") if isinstance(meta, dict) else None) or []
+        try:
+            from core.knowledge_resolver import overdue_gap as _overdue_gap
+            gap_limit = _overdue_gap(length, genre_tags)
+        except Exception:
+            gap_limit = 20
+
+        # 检查: 距上次推进超过阈值的活跃伏笔
         chapter_num = chapter.get("chapter_number", 0)
         stale_count = 0
         for fs_id, fs in entries.items():
@@ -67,14 +78,14 @@ class ForeshadowManagerPlugin(IQualityGate):
                 building_chs = fs.get("building_chapters", [])
                 planted_ch = fs.get("planted_chapter", 0)
                 last_mention = max(building_chs) if building_chs else planted_ch
-                if chapter_num - last_mention > 20:
+                if chapter_num - last_mention > gap_limit:
                     stale_count += 1
 
         if stale_count > 0:
             issues.append(GateIssue(
                 severity=Severity.WARNING,
                 code="foreshadow.stale",
-                message=f"有 {stale_count} 个伏笔超过20章未推进，可能导致读者遗忘或作者遗忘",
+                message=f"有 {stale_count} 个伏笔超过 {gap_limit} 章未推进，可能导致读者遗忘或作者遗忘",
                 suggestion="在最近章节中提及或推进这些伏笔，或确认是否需要废弃",
             ))
 
@@ -111,8 +122,12 @@ class ForeshadowManagerPlugin(IQualityGate):
         chapter_content: str,
         chapter_num: int,
         existing_foreshadows: dict[str, Any] | None = None,
+        expected_payoff_descs: list[str] | None = None,
     ) -> dict[str, Any]:
         """从章节中提取伏笔信息.
+
+        Args:
+            expected_payoff_descs: 本章大纲计划回收的伏笔「描述」列表，用于生成回收提示。
 
         Returns:
             {
@@ -121,30 +136,29 @@ class ForeshadowManagerPlugin(IQualityGate):
                 "paid": [{"foreshadow_id": ..., "description": ...}, ...],
             }
         """
+        from models.foreshadow import foreshadow_text_match
+
         existing = {}
         expected_payoffs = []  # 本章计划回收的伏笔
-        if existing_foreshadows:
-            entries = existing_foreshadows.get("entries", {})
+        entries = (existing_foreshadows or {}).get("entries", {})
+        for fs_id, fs in entries.items():
+            if not isinstance(fs, dict):
+                continue
+            existing[fs_id] = {
+                "description": fs.get("description", ""),
+                "status": fs.get("status", ""),
+                "planted_chapter": fs.get("planted_chapter", 0),
+            }
+        # 用大纲本章的「计划回收描述」中文友好匹配到已有伏笔，生成回收提示
+        for desc in (expected_payoff_descs or []):
+            if not desc:
+                continue
             for fs_id, fs in entries.items():
-                if not isinstance(fs, dict):
+                if not isinstance(fs, dict) or fs.get("status") == "paid":
                     continue
-                existing[fs_id] = {
-                    "description": fs.get("description", ""),
-                    "status": fs.get("status", ""),
-                    "planted_chapter": fs.get("planted_chapter", 0),
-                }
-                # 检查该伏笔是否计划在本章回收
-                payoffs = fs.get("foreshadow_payoffs", [])
-                if payoffs:
-                    for po in payoffs:
-                        try:
-                            if int(po) == chapter_num:
-                                expected_payoffs.append({
-                                    "id": fs_id,
-                                    "description": fs.get("description", ""),
-                                })
-                        except (ValueError, TypeError):
-                            pass
+                if foreshadow_text_match(fs.get("description", ""), desc):
+                    expected_payoffs.append({"id": fs_id, "description": fs.get("description", "")})
+                    break
 
         payoff_hint = ""
         if expected_payoffs:

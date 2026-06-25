@@ -333,8 +333,8 @@ class OutlinePlannerPlugin:
       "character_moments": ["人物节点1"],
       "is_climax": false,
       "is_hook_point": false,
-      "foreshadow_plants": [],
-      "foreshadow_payoffs": [],
+      "foreshadow_plants": ["本章埋下的伏笔的简短描述（一句话，如：林晚的玉佩有异样反应）"],
+      "foreshadow_payoffs": ["本章回收的伏笔的简短描述（须与之前某章 foreshadow_plants 的描述呼应）"],
       "status": "planned"
     }}
   ]
@@ -343,6 +343,8 @@ class OutlinePlannerPlugin:
 
 要求:
 - **章节标题(title)不要包含书名**，只写章节本身的标题，如"血溅退婚夜"、"棋局重开"，不要写"《书名》第一章 xxx"
+- **foreshadow_plants / foreshadow_payoffs 都填「伏笔的简短文字描述」**（不要填章号或编号）；
+  回收描述应能让人对应到之前埋设时的描述；本章无埋设/回收则留空数组 `[]`
 - is_climax=true 的章节每卷2-3个
 - is_hook_point=true (⭐名场面) 每卷1-2个
 - 关键伏笔的埋设和回收跨章节标注
@@ -410,8 +412,8 @@ class OutlinePlannerPlugin:
       "character_moments": ["人物节点1"],
       "is_climax": false,
       "is_hook_point": false,
-      "foreshadow_plants": [],
-      "foreshadow_payoffs": [],
+      "foreshadow_plants": ["本章埋下的伏笔的简短描述（一句话）"],
+      "foreshadow_payoffs": ["本章回收的伏笔的简短描述（须与之前某章 foreshadow_plants 呼应）"],
       "status": "planned"
     }}
   ]
@@ -421,6 +423,7 @@ class OutlinePlannerPlugin:
 要求:
 - **章节标题(title)不要包含书名**，只写章节本身的标题，如"血溅退婚夜"、"棋局重开"，不要写"《书名》第一章 xxx"
 - 所有章节 volume_number 都为 1（不分卷）
+- **foreshadow_plants / foreshadow_payoffs 都填「伏笔的简短文字描述」**（不要填章号或编号）；本章无则留空数组 `[]`
 - is_climax=true 的章节每5-8章一个
 - is_hook_point=true (⭐名场面) 每8-12章一个
 - 关键伏笔的埋设和回收跨章节标注

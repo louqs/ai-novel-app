@@ -113,6 +113,24 @@ NOVEL_WRITER_SYSTEM = """你是资深网文作家，写过500万字。你的文�
 4. **反差场景**："一边是婚礼现场。另一边，医院走廊的灯在闪。"
 5. **未完成动作**："他刚把钥匙插进锁孔，门里传来一声轻响。"
 
+### 伏笔埋设手法（埋要"藏"，不要"宣布"）
+伏笔的命门是**埋时不能像在埋**——读者当下不觉得重要，回看才恍然。禁止"他不知道，这个东西以后会很关键"这类作者旁白式预告。
+| 手法 | 用法 | 示例 |
+|------|------|------|
+| 借物入景 | 让伏笔物件自然出现在场景里，只做一笔白描 | "她把那枚旧玉佩随手搁在抽屉最里头。" |
+| 借口带出 | 通过对话的次要信息夹带，不停顿强调 | "'对了，你妈那串佛珠，我收着呢。'他没接话。" |
+| 反常一瞬 | 给一个当下解释得通、事后才显异常的小反应 | "听到这名字，老人的手抖了一下，随即笑说手冷。" |
+| 闲笔细节 | 当作环境/习惯顺带写，混在正常信息流里 | "他每次锁门都拧三下。这次只拧了两下。" |
+
+### 伏笔回收手法（收要"呼应"，不要"复述"）
+回收靠**让读者自己接上**，不是角色站出来解释"原来当初那个就是为了现在"。
+| 手法 | 用法 | 示例 |
+|------|------|------|
+| 旧物重现 | 让埋设的物件在新情境再现，含义自然翻转 | "抽屉最里头那枚玉佩，此刻正贴着她的命门发烫。" |
+| 一语成谶 | 早先随口的话此刻字面应验 | "他真的别后悔了——只是后悔的是说话的人。" |
+| 细节闭合 | 回扣埋设时的反常细节，不点破 | "门这次拧了三下。他知道，屋里没人在等他了。" |
+| 错位揭晓 | 由第三方/侧面带出真相，主角后知后觉 | "档案最后一页的签名，她见过——在母亲的遗书上。" |
+
 ## 七、对话权力动态
 - **压制模式**：对手说3-5句 → 主角回1个字
 - **反转模式**：对手吹嘘2-3句 → 主角说1个事实 → 对手沉默
@@ -1007,6 +1025,7 @@ class ChapterWriterPlugin:
 
         # 从大纲读取本章的伏笔计划（foreshadow_plants + foreshadow_payoffs）
         outline_foreshadows = []
+        chapter_payoffs = []  # 本章大纲计划回收的伏笔描述
         try:
             if self._kernel.db:
                 settings = await self._kernel.db.get_settings(project_id)
@@ -1017,6 +1036,7 @@ class ChapterWriterPlugin:
                             if ch.get("chapter_number") == chapter_num:
                                 plants = ch.get("foreshadow_plants", [])
                                 payoffs = ch.get("foreshadow_payoffs", [])
+                                chapter_payoffs = [p for p in payoffs if isinstance(p, str) and p.strip()]
                                 if plants:
                                     outline_foreshadows.append({
                                         "chapter": chapter_num,
@@ -1028,28 +1048,12 @@ class ChapterWriterPlugin:
         except Exception:
             pass
 
-        # 提取新伏笔（传入大纲伏笔计划作为参考）
+        # 提取新伏笔（传入大纲伏笔计划与本章计划回收描述作为参考）
         result = await fm.instance.extract_foreshadows(
-            chapter_content, chapter_num, existing
+            chapter_content, chapter_num, existing, expected_payoff_descs=chapter_payoffs
         )
 
         entries = existing.get("entries", {})
-
-        # 从大纲中获取本章的 foreshadow_payoffs（计划在本章回收的伏笔描述）
-        chapter_payoffs = []
-        try:
-            if self._kernel.db:
-                settings = await self._kernel.db.get_settings(project_id)
-                progress = settings.get("progress", {})
-                for vol in progress.get("volumes", []):
-                    if vol.get("volume_number") == volume_number:
-                        for ch in vol.get("chapters", []):
-                            if ch.get("chapter_number") == chapter_num:
-                                chapter_payoffs = ch.get("foreshadow_payoffs", [])
-                                break
-                        break
-        except Exception:
-            pass
 
         # 添加新伏笔（关联大纲中的回收计划）
         for fs in result.get("new_foreshadows", []):
@@ -1563,10 +1567,30 @@ class ChapterWriterPlugin:
         # 活跃伏笔
         foreshadows = context.get("active_foreshadows", [])
         if foreshadows:
-            parts.append("\n## 需要推进的伏笔")
+            parts.append("\n## 需要推进的伏笔（按埋设手法自然带出，忌作者旁白预告）")
             for fs in foreshadows:
                 if isinstance(fs, dict):
-                    parts.append(f"- [{fs.get('foreshadow_id', '')}] {fs.get('description', '')}")
+                    overdue = " ⚠️已较久未推进，本章优先考虑推进或回收" if fs.get("_overdue") else ""
+                    parts.append(f"- [{fs.get('foreshadow_id', '')}] {fs.get('description', '')}{overdue}")
+
+        # 本章计划埋设/回收的伏笔（来自大纲节点，对所有平台注入——不再限起点模式）
+        import re as _re
+        node_plants = [
+            _re.sub(r'\[fs_\w+\]\s*', '', p).strip()
+            for p in chapter_node.get("foreshadow_plants", []) if isinstance(p, str) and p.strip()
+        ]
+        node_payoffs = [
+            _re.sub(r'\[fs_\w+\]\s*', '', p).strip()
+            for p in chapter_node.get("foreshadow_payoffs", []) if isinstance(p, str) and p.strip()
+        ]
+        if node_plants:
+            parts.append("\n## 🌱 本章要埋下的伏笔（用「伏笔埋设手法」，藏进场景，别宣布）")
+            for p in node_plants[:5]:
+                parts.append(f"- {p}")
+        if node_payoffs:
+            parts.append("\n## 🎯 本章要回收的伏笔（用「伏笔回收手法」，靠呼应让读者自己接上，别复述解释）")
+            for p in node_payoffs[:5]:
+                parts.append(f"- {p}")
 
         # 修订指令
         if revision_instructions:

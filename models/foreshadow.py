@@ -44,6 +44,56 @@ def foreshadow_text_match(a: str, b: str, threshold: float = 0.3) -> bool:
     return jaccard >= threshold or coverage >= 0.6
 
 
+def _fs_last_touch(fs: dict) -> int:
+    """伏笔最近一次被推进的章号（无推进记录则取埋设章）."""
+    bc = fs.get("building_chapters") or [fs.get("planted_chapter", 0)]
+    return max(bc) if bc else fs.get("planted_chapter", 0)
+
+
+# 伏笔超期阈值的篇幅基线（章）——短篇收得紧，长篇可拖久。
+# 这是「该随篇幅变的量化值」，不写死单一 20；体裁靶值可在此基础上进一步收紧（取 min）。
+_OVERDUE_GAP_BY_LENGTH = {
+    "short": 4,        # 短篇 ~10 章，拖 4 章不收就晚
+    "medium": 8,       # 中篇 ~30 章
+    "long": 20,        # 长篇 100+ 章（原口径）
+    "extra_long": 30,  # 超长篇
+}
+
+
+def overdue_gap_for_length(length: str | None) -> int:
+    """按篇幅取伏笔超期阈值基线；未知篇幅回退长篇口径 20."""
+    return _OVERDUE_GAP_BY_LENGTH.get((length or "long").strip(), 20)
+
+
+def rank_active_foreshadows(
+    entries: dict, current_chapter: int = 0, *, top_n: int = 8, overdue_gap: int = 20
+) -> list[dict]:
+    """筛选并排序活跃伏笔，供注入正文生成 prompt.
+
+    - 仅取 status 为 planted/building 的伏笔。
+    - 标记 `_overdue`：距上次推进 >= overdue_gap 章。
+    - 排序：超期优先 → 优先级高优先 → 埋设越久越靠前（越该回收）。
+    - 只返回前 top_n 条，但所有超期项一律保留（不被截断挤掉）。
+    """
+    active = [
+        fs for fs in entries.values()
+        if isinstance(fs, dict) and fs.get("status") in ("planted", "building")
+    ]
+    for fs in active:
+        gap = (current_chapter - _fs_last_touch(fs)) if current_chapter else 0
+        fs["_overdue"] = gap >= overdue_gap
+    active.sort(
+        key=lambda fs: (
+            not fs.get("_overdue", False),
+            -int(fs.get("priority", 1) or 1),
+            _fs_last_touch(fs),
+        )
+    )
+    top = active[:top_n]
+    overdue = [fs for fs in active if fs.get("_overdue") and fs not in top]
+    return top + overdue
+
+
 class ForeshadowStatus(str, Enum):
     """伏笔生命周期."""
 

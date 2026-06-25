@@ -71,6 +71,22 @@ class NovelLength(str, Enum):
         return 6
 
 
+# 按篇幅缩放的「记忆窗口」基线——短篇信息少、收得紧；长篇放宽。
+# 用于 L2 热记忆「最近N章摘要」与事实账本「最近N条」等随篇幅该变的窗口。
+_MEMORY_WINDOW_BY_LENGTH = {
+    # length: (近期章节摘要窗口, 事实账本条数窗口)
+    "short": (3, 8),
+    "medium": (5, 15),
+    "long": (6, 20),
+    "extra_long": (8, 30),
+}
+
+
+def memory_windows(length: str | None) -> tuple[int, int]:
+    """按篇幅取 (近期章节摘要窗口, 事实账本条数窗口)；未知篇幅回退长篇口径."""
+    return _MEMORY_WINDOW_BY_LENGTH.get((length or "long").strip(), (6, 20))
+
+
 class Platform(str, Enum):
     """投稿平台."""
 
