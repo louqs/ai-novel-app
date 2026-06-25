@@ -89,7 +89,14 @@
       "Bash(python -c \"from plugins.pipeline_editor.plugin import PipelineEditorPlugin; print\\('Plugin import OK'\\)\")",
       "Bash(sqlite3 *)",
       "Bash(python3 *)",
-      "Bash(python -m pytest tests/ -v -m smoke --tb=short)"
+      "Bash(python -m pytest tests/ -v -m smoke --tb=short)",
+      "Read(//Users/dev/**)",
+      "Read(//Users/dev/workspace-f94b5329/knowledge_base/**)",
+      "Bash(grep -rnoE \".{0,15}红线.{0,30}\" .)",
+      "Bash(grep -vE \"references/|\\\\.md\\\\`\")",
+      "Bash(grep -oE \"references/[^\\\\` ]+\\\\.md\" SKILL.md.bak)",
+      "Bash(grep -oE \"references/[^\\\\` ]+\\\\.md\" SKILL.md)",
+      "Bash(xargs grep -l \"skill\" -i)"
     ]
   }
 }
