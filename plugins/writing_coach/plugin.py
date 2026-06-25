@@ -60,8 +60,12 @@ class WritingCoachPlugin:
         *,
         platform: str = "fanqie",
         chapter_num: int = 0,
+        genre_tags: list[str] | None = None,
     ) -> dict[str, Any]:
         """分析单章质量。
+
+        Args:
+            genre_tags: 项目体裁标签，用于按体裁靶值判罚（None 则回退通用默认）.
 
         Returns:
             {"score": float, "suggestions": [...], "strengths": [...], "metrics": {...}}
@@ -83,7 +87,7 @@ class WritingCoachPlugin:
             "metrics": metrics,
             "suggestions": ai_analysis.get("suggestions", []),
             "strengths": ai_analysis.get("strengths", []),
-            "score": ai_analysis.get("score", self._calculate_base_score(metrics)),
+            "score": ai_analysis.get("score", self._calculate_base_score(metrics, genre_tags)),
         }
 
     async def analyze_project(
@@ -389,7 +393,7 @@ class WritingCoachPlugin:
         )
         return self._parse_json(result["content"])
 
-    def _calculate_base_score(self, metrics: dict) -> float:
+    def _calculate_base_score(self, metrics: dict, genre_tags: list[str] | None = None) -> float:
         score = 0.5
         if metrics.get("opens_with_dialogue"):
             score += 0.1
@@ -397,7 +401,13 @@ class WritingCoachPlugin:
             score += 0.15
         if metrics.get("mobile_friendly"):
             score += 0.1
-        if metrics.get("dialogue_ratio", 0) > 25:
+        # 对话占比：落在「体裁靶值区间」内才加分，而非一律「越高越好」
+        # 体裁未配置时回退通用默认下限 25%（保持旧行为：>25 即视为达标）
+        from core import knowledge_resolver as kr
+
+        lo, hi = kr.ratio_range("对话比例", genre_tags, default=(25.0, 100.0))
+        dr = metrics.get("dialogue_ratio", 0)
+        if lo <= dr <= hi:
             score += 0.1
         if metrics.get("fast_opening"):
             score += 0.05

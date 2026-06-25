@@ -88,7 +88,47 @@ scripts/writing_tools/
   - 数值可靠度分两档：AI科幻/女频爱情/都市悬疑/都市职场/异能志怪 源自体裁包既有口径；
     太空科幻/悬疑推理/赛博庞克 源自类型常识基线（靶值表中标 `⚙`，建议按竞品数据校准）
 
-新增体裁时：建 `genre_skills/{题材}/靶值.md`（照搬 `AI科幻/靶值.md` 结构，只填与通用默认的差量即可）。
+### 新增体裁标准流程（建目录即生效，不碰代码）
+
+新增一个体裁（如「仙侠」「末世」「玄幻」）按以下三步，全程不改 Python；建完即被
+正文生成 / 大纲生成 / 编辑优化三处自动吸收（目录名直配，靶值/红线/阶段提示自动注入）：
+
+1. **必做** — 建 `genre_skills/{体裁}/靶值.md`：照搬任一现成靶值结构，**只填与通用默认不同的差量**，
+   未列项自动回退通用默认。无把握的量化值（对话比例、爽点间隔等）标 `⚙` 并注明「建议按竞品校准」。
+2. **可选** — 建 `{体裁}/.github/instructions/题材边界与创作说明.instructions.md`：作为体裁红线来源
+   （`genre_boundaries` 会读取），写题材定义、核心承诺、创作禁忌。
+3. **可选** — 建 `{体裁}/.github/prompts/创建小说正文.prompt.md`：正文阶段提示槽。
+   **务必用自包含写法**（参照 `玄幻/创建小说正文.prompt.md`），直接内联题材正文要点 +
+   指向通用技能；**不要照抄 `AI科幻/` 那种路由版**——它路由到 `AI科幻-创建小说正文` 等专项 Skill，
+   轻量体裁包没有这些 Skill 会引用到不存在的文件。
+
+体裁标签是前端/CLI 的**自由文本输入**（非固定下拉），用户填精确目录名即命中靶值；
+填别名（如「科幻」）走 `_GENRE_ALIASES` 回退。验证新体裁是否生效：
+`python -c "from core import knowledge_resolver as kr; print(kr.resolve_genre_dirs(['体裁名']), kr.genre_targets(['体裁名']))"`。
+
+> 区分「完整体裁包」与「轻量体裁包」：完整包（如都市悬疑，247 文件）含审阅/多平台输出/竞对分析等全套 Skill；
+> 轻量包（如玄幻，3 文件：靶值+边界+正文阶段提示）已够日常生成/优化/大纲使用，要全功能再补 Skill 包。
+
+### 知识库 → 生成/优化管线的接入（约定式自动发现）
+
+`core/knowledge_resolver.py` 是知识库文档进入 LLM 调用的**统一接入层**，遵循「约定优于配置」：
+按目录与命名约定自动发现，**新增体裁/技能只要符合约定即被自动吸收，无需改代码**。
+
+约定槽位：
+- `genre_skills/{题材}/靶值.md` → G 层量化阈值（`genre_targets` 解析靶值表）
+- `genre_skills/{题材}/题材边界与创作说明*.md`（根目录或 `.github/instructions/`）→ 体裁红线（`genre_boundaries`）
+- `genre_skills/{题材}/.github/prompts/{阶段}.prompt.md` → 阶段题材规则（`genre_stage_prompt`）
+- `writing_skills/{技能}/SKILL.md` 的 `§A 红线` / `§C 靶值` 节 → 通用红线与靶值（`skill_layers`，只抽这两节不抽技法库）
+
+体裁目录解析：**目录名直配优先**（标签=目录名即命中），别名表（`_GENRE_ALIASES`）仅作旧标签回退。
+区间型靶值（如对话比例 `45%–65%`）用 `ratio_range()` 解析为数值对供判罚。
+
+已接入的三个点（创建项目按设计**不接入**）：
+- **正文生成** `core/orchestrator._load_genre_skills` + `web/.../stream.py` — 注入靶值表 + 体裁红线 + 阶段提示
+- **大纲生成** `outline_planner.plan_outline(genre_tags=...)` — 卷级/章级/平铺 prompt 注入靶值 + 红线
+- **编辑优化** `pipeline_editor` + `writing_coach._calculate_base_score` — 注入润色/审阅 §A/§C；对话占比按体裁区间判罚（落区间内才加分）
+
+全程静默回退：文件缺失/无体裁标签 → 走通用默认，不报错不阻断。测试见 `tests/test_knowledge_resolver.py`。
 
 ## 开发命令
 

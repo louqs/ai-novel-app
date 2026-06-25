@@ -1,64 +1,80 @@
 genres:
-  - name: 极速短剧爽文
+  - name: 规则怪谈·无限流
     platform: fanqie
-    audience: 下沉市场男性/短剧受众
+    audience: 18-25岁男性为主
     heat: ★★★★★
-    description: 专为短剧改编定制的超快节奏网文，三章一爽点，十章一反转，抛弃长线铺垫，主打情绪拉扯与即时反馈，直接对接下游影视化需求。
-    keywords: [短剧向, 极速爽, 战神归来, 逆袭, 打脸]
+    description: 以“国运副本”、“诡异复苏”为背景，主角通过解谜、卡BUG、利用规则漏洞在副本中求生。融合了惊悚、烧脑与“爱国情怀”爽点，互动性强，易引发读者玩梗。
+    keywords: [规则怪谈, 无限流, 国运, 诡异, 烧脑, 沙雕男主]
     competition: 极高
-    new_author_friendly: true
-    updated: "2026-06-19"
-  - name: 新中式民俗悬疑
-    platform: fanqie/qidian
-    audience: 泛悬疑读者/年轻群体
-    heat: ★★★★★
-    description: 融合地方非遗、民俗志异与规则怪谈，构建具有东方诡异美学的世界观，从单体怪谈升级为长线民俗宇宙，取代传统盗墓与西方克苏鲁题材。
-    keywords: [规则怪谈, 中式民俗, 非遗, 异闻录, 悬疑解谜]
-    competition: 高
     new_author_friendly: false
     updated: "2026-06-19"
-  - name: 硬核无CP大女主
-    platform: jinjiang
-    audience: 女性读者/事业粉
-    heat: ★★★★★
-    description: 摒弃恋爱脑，专注搞钱、基建、科研或商战。主角凭借专业能力在极端环境或职场中破局，提供强烈的独立爽感与成长共鸣，彻底告别娇妻文学。
-    keywords: [无CP, 搞事业, 基建, 商战, 大女主]
-    competition: 中高
-    new_author_friendly: true
-    updated: "2026-06-19"
-  - name: 反内卷情绪神豪
+
+  - name: 非遗·民俗恐怖
     platform: fanqie
-    audience: 职场压力青年/下沉男性
+    audience: 22-35岁泛悬疑爱好者
+    heat: ★★★★★
+    description: 将中式恐怖与非遗文化结合，如“纸扎匠”、“傩戏”、“皮影”、“扎纸人”等。氛围感强，画面感足，短视频切片传播力极强，是当前悬疑品类下的绝对王者。
+    keywords: [民俗, 恐怖, 非遗, 纸扎, 道术, 山村, 悬疑]
+    competition: 极高
+    new_author_friendly: false
+    updated: "2026-06-19"
+
+  - name: 脑洞·科技霸权
+    platform: qidian
+    audience: 25-40岁男性，高知读者
     heat: ★★★★☆
-    description: 传统神豪文的进化版，系统奖励不再是无脑砸钱，而是通过提供情绪价值、治愈他人或反卷躺平获得收益，主打精神共鸣与解压，迎合社会反内卷情绪。
-    keywords: [神豪, 反内卷, 情绪价值, 躺平, 治愈]
+    description: 摒弃传统系统文，强调主角凭借自身知识或“黑科技图纸”进行工业逆袭。从芯片、光刻机到生物制药，硬核科普与大国崛起叙事结合，满足读者对“国运昌隆”的期待。
+    keywords: [黑科技, 工业文, 大国重工, 学霸, 科技兴国, 硬核]
     competition: 高
+    new_author_friendly: false
+    updated: "2026-06-19"
+
+  - name: 反套路·女配觉醒
+    platform: jinjiang
+    audience: 18-30岁女性
+    heat: ★★★★★
+    description: 女主穿越成恶毒女配、炮灰或替身，开局即撕毁剧情线。不再围着男主转，专注搞事业、修仙、夺权或直接“发疯”整治内宅。情绪价值拉满，主打“乳腺通畅”体验。
+    keywords: [女配, 觉醒, 反套路, 发疯文学, 替身, 仙侠, 宫斗]
+    competition: 极高
+    new_author_friendly: false
+    updated: "2026-06-19"
+
+  - name: 现实主义·银发浪潮
+    platform: qidian
+    audience: 30-50岁全性别
+    heat: ★★★★☆
+    description: 聚焦中年危机、养老、再就业、广场舞江湖等社会议题。主角多为重生到老年或中年失意者，凭借人生阅历“整顿职场”或“重活一次”。文风接地气，共鸣感强。
+    keywords: [重生, 中年, 养老, 现实, 日常, 温情, 创业]
+    competition: 中
     new_author_friendly: true
     updated: "2026-06-19"
-  - name: 赛博AI觉醒流
-    platform: qidian
-    audience: 核心男频读者/科幻爱好者
+
+  - name: 纯爱·刑侦破案
+    platform: jinjiang
+    audience: 20-35岁女性
     heat: ★★★★☆
-    description: 基于近年AI大爆发背景，探讨AI意识觉醒、脑机接口与虚拟世界重构。主角往往与AI共生或对抗，在赛博社会中打破阶级垄断，科技感与网文爽点深度融合。
-    keywords: [赛博朋克, AI觉醒, 脑机接口, 虚拟现实, 黑客]
-    competition: 中
+    description: 双男主刑侦文，强强联手。单元剧形式推进，结合犯罪心理学、法医学和微表情分析。案件逻辑严密，情感线在生死危机中缓慢升温，是“剧情流”纯爱的代表作赛道。
+    keywords: [刑侦, 纯爱, 强强, 单元剧, 犯罪心理, 法医, 悬疑]
+    competition: 高
     new_author_friendly: false
     updated: "2026-06-19"
-  - name: 直播综艺无限流
-    platform: jinjiang/qidian
-    audience: Z世代/悬疑冒险爱好者
+
+  - name: 种田·基建流
+    platform: fanqie
+    audience: 18-30岁全性别
     heat: ★★★★☆
-    description: 将无限流与直播、弹幕文化深度绑定。玩家在诡异综艺中求生，观众弹幕可影响副本规则，主角通过整活或解谜收割观众恐惧值与打赏，互动感极强。
-    keywords: [无限流, 直播, 弹幕互动, 综艺逃生, 诡异]
-    competition: 中高
-    new_author_friendly: false
-    updated: "2026-06-19"
-  - name: 第四天灾文明演化
-    platform: qidian
-    audience: 男频老白/设定党
-    heat: ★★★★☆
-    description: 玩家流的高级形态，主角作为幕后黑手引导异星玩家（第四天灾）从部落时代演化至星际文明，融合沙盘经营与群像喜剧，满足读者的造物主掌控欲。
-    keywords: [第四天灾, 文明演化, 幕后黑手, 沙盘, 群像]
+    description: 从零开始建设领地、村庄或荒岛，融合了生存、经营与塔防元素。节奏慢热但粘性极高，读者代入感强。2026年趋势偏向“无魔或少魔”的硬核种田，如改良农具、兴修水利。
+    keywords: [种田, 基建, 领主, 经营, 生存, 无魔, 种田文]
     competition: 中
+    new_author_friendly: true
+    updated: "2026-06-19"
+
+  - name: 玄幻·碎片化修仙
+    platform: fanqie
+    audience: 16-25岁男性
+    heat: ★★★★☆
+    description: 又称为“时间管理大师”流派。主角在修仙界、现代都市、末日废土等多重身份间反复横跳，利用不同位面的资源差进行倒卖和修炼。节奏极快，信息密度极大，适合碎片化阅读。
+    keywords: [双穿, 多马甲, 时间管理, 倒爷, 多重身份, 快节奏, 爽文]
+    competition: 高
     new_author_friendly: false
     updated: "2026-06-19"

@@ -90,6 +90,26 @@ class OutlinePlannerPlugin:
     async def on_unload(self) -> None:
         self._kernel = None
 
+    @staticmethod
+    def _build_genre_brief(genre_tags: list[str] | None) -> str:
+        """按体裁组装大纲阶段的规则基线（靶值 + 红线）；无则返回空串，回退原行为."""
+        try:
+            from core import knowledge_resolver as kr
+
+            parts: list[str] = []
+            targets = kr.genre_targets(genre_tags)
+            if targets:
+                # 大纲阶段关注结构性靶值（章首窗口/爽点间隔/字数窗口等）
+                tv_lines = "\n".join(f"- {k}：{v}" for k, v in targets.items())
+                parts.append(f"**本体裁量化靶值（规划时按此把控节奏与篇幅）**:\n{tv_lines}")
+            for block in kr.genre_boundaries(genre_tags):
+                parts.append(block[:1200])
+            if not parts:
+                return ""
+            return "\n\n## 体裁规则基线（大纲须遵守）\n" + "\n\n".join(parts)
+        except Exception:
+            return ""
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -104,6 +124,7 @@ class OutlinePlannerPlugin:
         total_chapters: int = 100,
         volumes: int = 4,
         target_words_per_chapter: int = 3000,
+        genre_tags: list[str] | None = None,
     ) -> Progress:
         """生成分卷大纲.
 
@@ -115,11 +136,14 @@ class OutlinePlannerPlugin:
             total_chapters: 总章节数.
             volumes: 分卷数量.
             target_words_per_chapter: 每章目标字数.
+            genre_tags: 项目体裁标签，用于注入体裁靶值与红线（None 则回退通用默认）.
 
         Returns:
             Progress 模型.
         """
         pacing = PLATFORM_PACING.get(platform, PLATFORM_PACING["fanqie"])
+        # 按体裁组装大纲阶段规则基线（约定式自动发现；无体裁/无文件则为空串，回退原行为）
+        genre_brief = self._build_genre_brief(genre_tags)
 
         # 根据目标字数计算每章字数范围（±30%，最低1500）
         quota_min = max(1500, int(target_words_per_chapter * 0.7))
@@ -130,6 +154,7 @@ class OutlinePlannerPlugin:
             chapters = await self._generate_flat_chapters(
                 settings, characters, direction, platform, total_chapters, pacing,
                 target_words_per_chapter=target_words_per_chapter,
+                genre_brief=genre_brief,
             )
             all_volumes = [VolumeOutline(
                 volume_number=1,
@@ -142,6 +167,7 @@ class OutlinePlannerPlugin:
             volume_outlines = await self._generate_volumes(
                 settings, characters, direction, platform, total_chapters, volumes, pacing,
                 target_words_per_chapter=target_words_per_chapter,
+                genre_brief=genre_brief,
             )
 
             import asyncio
@@ -152,6 +178,7 @@ class OutlinePlannerPlugin:
                     settings, characters, direction, platform, vol, pacing,
                     target_words_per_chapter=target_words_per_chapter,
                     is_last_volume=is_last_vol,
+                    genre_brief=genre_brief,
                 )
                 vol["chapters"] = chapters
                 return vol
@@ -178,6 +205,7 @@ class OutlinePlannerPlugin:
         pacing: dict,
         *,
         target_words_per_chapter: int = 3000,
+        genre_brief: str = "",
     ) -> list[dict[str, Any]]:
         """生成卷级大纲."""
         chars_summary = self._summarize_characters(characters)
@@ -210,6 +238,7 @@ class OutlinePlannerPlugin:
 **分卷数**: {num_volumes}
 **每章目标字数**: {target_words_per_chapter}字（范围: {words_min}-{words_max}字/章）
 **平台节奏**: {pacing}
+{genre_brief}
 
 ⚠️ **核心约束**: 这是一部{total_chapters}章的完整小说，必须在{total_chapters}章内讲完一个完整故事。请根据章节数合理控制故事复杂度——章节数少就写单线故事，章节数多才能写多线交织。
 
@@ -260,6 +289,7 @@ class OutlinePlannerPlugin:
         *,
         target_words_per_chapter: int = 3000,
         is_last_volume: bool = False,
+        genre_brief: str = "",
     ) -> list[dict[str, Any]]:
         """为单卷生成章节节点."""
         chapters_count = volume.get("chapters_count", 25)
@@ -288,7 +318,7 @@ class OutlinePlannerPlugin:
 {story_ctx}卷名: {volume.get('title', '')}
 卷弧光: {volume.get('arc_description', '')}
 每章目标字数: {target_words_per_chapter}字（范围: {words_min}-{words_max}字/章）
-{ending_hint}
+{ending_hint}{genre_brief}
 
 以 JSON 返回（只返回 JSON）:
 ```json
@@ -342,6 +372,7 @@ class OutlinePlannerPlugin:
         pacing: dict,
         *,
         target_words_per_chapter: int = 3000,
+        genre_brief: str = "",
     ) -> list[dict[str, Any]]:
         """不分卷模式：直接生成所有章节节点."""
         # 故事上下文（不传书名，避免 LLM 把书名加到章节标题中）
@@ -362,6 +393,7 @@ class OutlinePlannerPlugin:
 {story_ctx}
 每章目标字数: {target_words_per_chapter}字（范围: {words_min}-{words_max}字/章）
 平台节奏: {pacing}
+{genre_brief}
 
 ⚠️ **核心约束**: 这是一部{total_chapters}章的完整小说，必须在{total_chapters}章内讲完一个完整故事。请根据章节数合理控制故事复杂度——章节数少就写单线故事，章节数多才能写多线交织。不要设置太多悬念线，所有伏笔必须在结局前回收。
 

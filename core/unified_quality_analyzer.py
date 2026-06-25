@@ -89,6 +89,7 @@ class UnifiedQualityAnalyzer:
         platform: str = "fanqie",
         chapter_num: int = 0,
         project_id: str = "",
+        genre_tags: list[str] | None = None,
     ) -> UnifiedReport:
         """分析章节 — 并行调用写作教练、十维评审、AI检测."""
         if not content.strip():
@@ -96,7 +97,7 @@ class UnifiedQualityAnalyzer:
 
         # 并行调用三个插件
         coach_result, evaluator_result, anti_ai_result = await asyncio.gather(
-            self._call_coach(content, platform, chapter_num),
+            self._call_coach(content, platform, chapter_num, genre_tags),
             self._call_evaluator(content),
             self._call_anti_ai(content),
             return_exceptions=True,
@@ -182,19 +183,23 @@ class UnifiedQualityAnalyzer:
         content: str,
         *,
         platform: str = "fanqie",
+        genre_tags: list[str] | None = None,
     ) -> UnifiedReport:
         """分析纯文本（不需要 project_id / chapter_num）."""
-        return await self.analyze_chapter(content, platform=platform)
+        return await self.analyze_chapter(content, platform=platform, genre_tags=genre_tags)
 
     # ------------------------------------------------------------------
     # 内部: 通过 kernel.get_plugin() 调用已加载的插件
     # ------------------------------------------------------------------
 
-    async def _call_coach(self, content: str, platform: str, chapter_num: int) -> dict:
+    async def _call_coach(self, content: str, platform: str, chapter_num: int,
+                          genre_tags: list[str] | None = None) -> dict:
         entry = await self._kernel.get_plugin("writing-coach")
         if not entry or not entry.instance:
             raise RuntimeError("writing-coach 插件未加载")
-        return await entry.instance.analyze_chapter(content, platform=platform, chapter_num=chapter_num)
+        return await entry.instance.analyze_chapter(
+            content, platform=platform, chapter_num=chapter_num, genre_tags=genre_tags,
+        )
 
     async def _call_evaluator(self, content: str) -> dict:
         entry = await self._kernel.get_plugin("quality-evaluator")

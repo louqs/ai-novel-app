@@ -2,10 +2,46 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from enum import Enum
 
 from pydantic import BaseModel, Field
+
+
+def _char_bigrams(text: str) -> set[str]:
+    """提取中文文本的字符 2-gram 集合（中文无空格，按字符切更可靠）."""
+    chars = re.findall(r"[一-鿿]", text or "")
+    if len(chars) < 2:
+        return set(chars)
+    return {chars[i] + chars[i + 1] for i in range(len(chars) - 1)}
+
+
+def foreshadow_text_match(a: str, b: str, threshold: float = 0.3) -> bool:
+    """判断两段伏笔描述是否指向同一伏笔（中文友好）.
+
+    优先比对显式编号「伏笔#N」；否则用字符 2-gram 的 Jaccard 相似度。
+    threshold 默认 0.3：中文描述措辞常有出入，过高会漏配。
+    """
+    if not a or not b:
+        return False
+    # 1) 显式编号优先
+    ma = re.search(r"伏笔#?(\d+)", a)
+    mb = re.search(r"伏笔#?(\d+)", b)
+    if ma and mb:
+        return ma.group(1) == mb.group(1)
+    # 2) 字符 2-gram Jaccard
+    ga, gb = _char_bigrams(a), _char_bigrams(b)
+    if not ga or not gb:
+        return False
+    inter = len(ga & gb)
+    union = len(ga | gb)
+    if union == 0:
+        return False
+    # Jaccard 或「较短串被高度覆盖」任一成立即视为匹配
+    jaccard = inter / union
+    coverage = inter / min(len(ga), len(gb))
+    return jaccard >= threshold or coverage >= 0.6
 
 
 class ForeshadowStatus(str, Enum):

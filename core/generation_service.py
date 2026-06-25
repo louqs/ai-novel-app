@@ -129,6 +129,7 @@ class GenerationService:
                 total_chapters=total_chapters,
                 volumes=volumes,
                 target_words_per_chapter=data.target_words_per_chapter,
+                genre_tags=data.genre_tags,
             )
 
             progress_dict = progress_model.model_dump() if hasattr(progress_model, 'model_dump') else progress_model
@@ -209,6 +210,7 @@ class GenerationService:
                     total_chapters=tc,
                     volumes=vol,
                     target_words_per_chapter=data.target_words_per_chapter,
+                    genre_tags=data.genre_tags,
                 )
                 progress_dict = progress_model.model_dump() if hasattr(progress_model, 'model_dump') else progress_model
                 return i, OutlineResult(success=True, progress=progress_dict, style_hint=hint, temperature=temp)
@@ -370,28 +372,10 @@ class GenerationService:
             logger.info("大纲伏笔已同步", project_id=project_id, new_count=new_count, paid_count=paid_count)
 
     def _foreshadow_matches_payoff(self, fs_desc: str, payoff_desc: str) -> bool:
-        """判断伏笔回收描述是否匹配某个伏笔."""
-        import re
+        """判断伏笔回收描述是否匹配某个伏笔（中文友好，复用统一匹配器）."""
+        from models.foreshadow import foreshadow_text_match
 
-        # 提取伏笔描述中的编号（如 "伏笔#1"）
-        fs_match = re.search(r'伏笔#?(\d+)', fs_desc)
-        payoff_match = re.search(r'伏笔#?(\d+)', payoff_desc)
-
-        if fs_match and payoff_match:
-            # 如果都有编号，比较编号
-            return fs_match.group(1) == payoff_match.group(1)
-
-        # 否则检查关键词重叠
-        fs_keywords = set(re.findall(r'[一-鿿]{2,}', fs_desc))
-        payoff_keywords = set(re.findall(r'[一-鿿]{2,}', payoff_desc))
-
-        # 如果有超过50%的关键词重叠，认为匹配
-        if fs_keywords and payoff_keywords:
-            overlap = fs_keywords & payoff_keywords
-            if len(overlap) >= min(len(fs_keywords), len(payoff_keywords)) * 0.5:
-                return True
-
-        return False
+        return foreshadow_text_match(fs_desc, payoff_desc)
 
     # ==================================================================
     # 加载项目数据

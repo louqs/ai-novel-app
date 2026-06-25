@@ -96,7 +96,20 @@
       "Bash(grep -vE \"references/|\\\\.md\\\\`\")",
       "Bash(grep -oE \"references/[^\\\\` ]+\\\\.md\" SKILL.md.bak)",
       "Bash(grep -oE \"references/[^\\\\` ]+\\\\.md\" SKILL.md)",
-      "Bash(xargs grep -l \"skill\" -i)"
+      "Bash(xargs grep -l \"skill\" -i)",
+      "Bash(python -m pytest tests/test_knowledge_resolver.py -v)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('core/orchestrator.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('web/backend/routes/stream.py',encoding='utf-8'\\).read\\(\\)\\); print\\('语法OK'\\)\")",
+      "Bash(python -c \"from core import orchestrator; from core import knowledge_resolver; print\\('导入OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('plugins/pipeline_editor/plugin.py',encoding='utf-8'\\).read\\(\\)\\); print\\('pipeline_editor 语法OK'\\)\")",
+      "Bash(python -m pytest tests/ -m smoke -q)",
+      "Bash(python -m pytest tests/test_plugin_manager.py tests/test_knowledge_resolver.py -q)",
+      "Bash(python -c \"from core import unified_quality_analyzer, orchestrator, knowledge_resolver; from plugins.writing_coach import plugin as w; from plugins.pipeline_editor import plugin as p; from plugins.outline_planner import plugin as o; print\\('全部导入OK'\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 python -c ' *)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c \"from core import knowledge_resolver as kr; print\\('目录:', kr.resolve_genre_dirs\\(['玄幻']\\)\\); print\\('靶值key:', list\\(kr.genre_targets\\(['玄幻']\\).keys\\(\\)\\)\\); print\\('对话区间:', kr.ratio_range\\('对话比例', ['玄幻'], default=\\(25.0,100.0\\)\\)\\)\")",
+      "Bash(awk '{print $5\\\\\"字节\\\\\", $NF}')",
+      "Bash(find \"D:\\\\vibe coding\\\\ai-novel-app\" -path \"*/\\\\.venv\" -prune -o -type f -name \"*.py\" -print)",
+      "Bash(xargs grep -l \"foreshadow\")",
+      "Bash(xargs grep -l 'foreshadow')"
     ]
   }
 }

@@ -247,18 +247,11 @@ async def _run_chapter_generation(pid: str, ch_num: int, vol_num: int):
         # 按篇幅注入方法论包 + 通用写作技巧包 + 题材技能包
         _METHOD_PACKS = {"short": "short-story-writing", "medium": "novel-writing", "long": "novel-templates", "extra_long": "novel-templates"}
         _UNIVERSAL_PACKS = ["writing-master", "writing-tutorial", "writing-workflow", "novel-writing-skills"]
-        _GENRE_SKILL_MAP = {
-            "都市": "都市职场", "职场": "都市职场",
-            "悬疑": "悬疑推理", "推理": "悬疑推理",
-            "都市悬疑": "都市悬疑",
-            "科幻": "AI科幻", "AI": "AI科幻",
-            "太空": "太空科幻",
-            "赛博朋克": "赛博庞克", "赛博": "赛博庞克",
-            "言情": "女频爱情", "女频": "女频爱情", "爱情": "女频爱情",
-            "异能": "异能志怪", "志怪": "异能志怪", "灵异": "异能志怪",
-        }
         try:
             from pathlib import Path
+
+            from core import knowledge_resolver as kr
+
             def _read_pack(name):
                 pack_dir = Path("knowledge_base/packs") / name / "content"
                 if not pack_dir.exists():
@@ -274,24 +267,15 @@ async def _run_chapter_generation(pid: str, ch_num: int, vol_num: int):
             method_tips = _read_pack(_METHOD_PACKS.get(length, "novel-templates"))
             for name in _UNIVERSAL_PACKS:
                 method_tips.extend(_read_pack(name))
-            # 题材技能包
-            loaded_genres = set()
-            for tag in genre_tags:
-                dir_name = _GENRE_SKILL_MAP.get(tag)
-                if not dir_name or dir_name in loaded_genres:
-                    continue
-                loaded_genres.add(dir_name)
-                skill_dir = Path("knowledge_base/genre_skills") / dir_name
-                if not skill_dir.exists():
-                    continue
-                prompt_file = skill_dir / ".github" / "prompts" / "创建小说正文.prompt.md"
-                if prompt_file.exists():
-                    text = prompt_file.read_text(encoding="utf-8").strip()
-                    if text:
-                        if "---" in text[1:]:
-                            parts = text.split("---", 2)
-                            text = parts[2].strip() if len(parts) > 2 else text
-                        method_tips.append({"content": text[:2000], "category": "writing_tip", "metadata": {"source": f"genre:{dir_name}", "file": "创建小说正文.prompt.md"}})
+            # 题材技能包（约定式自动发现：阶段提示 + 靶值 + 体裁红线）
+            for text in kr.genre_stage_prompt(genre_tags, "创建小说正文"):
+                method_tips.append({"content": text[:2000], "category": "writing_tip", "metadata": {"source": "genre:stage_prompt", "file": "创建小说正文.prompt.md"}})
+            targets = kr.genre_targets(genre_tags)
+            if targets:
+                tv_lines = "\n".join(f"- {k}：{v}" for k, v in targets.items())
+                method_tips.append({"content": f"## 本体裁量化靶值（按此取值，非通用默认）\n{tv_lines}", "category": "writing_tip", "metadata": {"source": "genre:targets", "file": "靶值.md"}})
+            for block in kr.genre_boundaries(genre_tags):
+                method_tips.append({"content": block[:1500], "category": "writing_tip", "metadata": {"source": "genre:boundary", "file": "题材边界/靶值§二"}})
             writing_tips = method_tips + writing_tips
         except Exception:
             pass

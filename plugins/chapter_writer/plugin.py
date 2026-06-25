@@ -26,6 +26,7 @@ from typing import Any
 from core.logging_config import get_logger
 from core.plugin_manager import PluginManifest
 from models.chapter import Chapter, ChapterMetadata
+from models.foreshadow import foreshadow_text_match
 
 logger = get_logger(__name__)
 
@@ -1059,10 +1060,12 @@ class ChapterWriterPlugin:
             matched_payoffs = []
             for outline_fs in outline_foreshadows:
                 for plant_desc in outline_fs.get("plants", []):
-                    # 如果描述有关键词重叠，关联该伏笔的回收计划
-                    if plant_desc and any(kw in desc for kw in plant_desc.split()[:3] if len(kw) > 1):
+                    # 中文友好匹配（修复：旧版用 split() 对中文无效，几乎永不命中）
+                    if plant_desc and foreshadow_text_match(plant_desc, desc):
                         matched_payoffs = outline_fs.get("payoffs", [])
                         break
+                if matched_payoffs:
+                    break
 
             entries[fs_id] = {
                 "foreshadow_id": fs_id,

@@ -269,6 +269,7 @@ class PipelineEditorPlugin:
 
         # 获取项目上下文（如有）
         context_info = ""
+        genre_tags: list[str] = []
         if project_id and self._kernel:
             try:
                 ns = f"project:{project_id}"
@@ -278,6 +279,39 @@ class PipelineEditorPlugin:
                     context_info += f"\n主要角色: {', '.join(char_names)}"
             except Exception:
                 pass
+            # 取项目体裁标签（用于按体裁注入靶值与红线）
+            if self._kernel.db:
+                try:
+                    meta = await self._kernel.db.get_project(project_id)
+                    if meta:
+                        tags_raw = meta.get("genre_tags", "[]")
+                        genre_tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+                except Exception:
+                    pass
+
+        # 注入润色/审阅规则基线（约定式自动发现：只取 §A 红线 + §C 靶值，不塞技法库全文）
+        try:
+            from core import knowledge_resolver as kr
+
+            rule_parts: list[str] = []
+            for skill in ("通用-正文润色", "通用-审阅章节正文"):
+                layers = kr.skill_layers(skill)
+                if layers.get("redlines"):
+                    rule_parts.append(f"### {skill} · 红线（违反即错）\n{layers['redlines'][:1200]}")
+                if layers.get("targets"):
+                    rule_parts.append(f"### {skill} · 靶值取值约定\n{layers['targets'][:800]}")
+            # 体裁量化靶值（对话占比/字数窗口等，按此判，非通用默认）
+            targets = kr.genre_targets(genre_tags)
+            if targets:
+                tv_lines = "\n".join(f"- {k}：{v}" for k, v in targets.items())
+                rule_parts.append(f"### 本体裁量化靶值（优化时按此带，非通用默认）\n{tv_lines}")
+            # 体裁红线增量
+            for block in kr.genre_boundaries(genre_tags):
+                rule_parts.append(block[:1000])
+            if rule_parts:
+                context_info += "\n\n## 优化必须遵守的规则基线\n" + "\n\n".join(rule_parts)
+        except Exception:
+            pass
 
         # 运行门禁链和流水线贡献者插件
         contributor_results = []
@@ -318,6 +352,7 @@ class PipelineEditorPlugin:
             coach_result = await self._coach_optimize(
                 result["current_content"], platform, chapter_num, context_info,
                 prev_annotations=result["steps"][-1] if result["steps"] else None,
+                genre_tags=genre_tags,
             )
             result["steps"].append(coach_result)
             result["current_content"] = coach_result.get("optimized", result["current_content"])
@@ -579,6 +614,7 @@ class PipelineEditorPlugin:
     async def _coach_optimize(
         self, content: str, platform: str, chapter_num: int,
         context_info: str, prev_annotations: dict | None = None,
+        genre_tags: list[str] | None = None,
     ) -> dict:
         """质量分析优化 — 统一分析器(写作教练+十维评审+AI检测) + LLM优化."""
         try:
@@ -586,7 +622,7 @@ class PipelineEditorPlugin:
             unified_report = {}
             report_summary = ""
             try:
-                report = await self._analyzer.analyze_text(content, platform=platform)
+                report = await self._analyzer.analyze_text(content, platform=platform, genre_tags=genre_tags)
                 unified_report = report.to_dict()
                 report_summary = self._format_unified_report(unified_report)
             except Exception as e:
@@ -596,7 +632,7 @@ class PipelineEditorPlugin:
                     coach_entry = await self._kernel.get_plugin("writing-coach")
                     if coach_entry and coach_entry.instance:
                         analysis = await coach_entry.instance.analyze_chapter(
-                            content, platform=platform, chapter_num=chapter_num,
+                            content, platform=platform, chapter_num=chapter_num, genre_tags=genre_tags,
                         )
                         report_summary = json.dumps(analysis, ensure_ascii=False, indent=2)
                 except Exception:

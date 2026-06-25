@@ -199,6 +199,7 @@ async def cmd_outline(args):
         platform=platform,
         total_chapters=args.chapters or 30,
         volumes=args.volumes or 2,
+        genre_tags=settings.get("genre_tags", []),
     )
     elapsed = time.time() - t0
 

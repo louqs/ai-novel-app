@@ -161,17 +161,8 @@ class OrchestrationEngine:
     # 通用写作技巧包（所有篇幅都注入）
     _UNIVERSAL_PACKS = ["writing-master", "writing-tutorial", "writing-workflow", "novel-writing-skills"]
 
-    # 题材标签 → genre_skills 目录映射
-    _GENRE_SKILL_MAP = {
-        "都市": "都市职场", "职场": "都市职场",
-        "悬疑": "悬疑推理", "推理": "悬疑推理",
-        "都市悬疑": "都市悬疑",
-        "科幻": "AI科幻", "AI": "AI科幻",
-        "太空": "太空科幻",
-        "赛博朋克": "赛博庞克", "赛博": "赛博庞克",
-        "言情": "女频爱情", "女频": "女频爱情", "爱情": "女频爱情",
-        "异能": "异能志怪", "志怪": "异能志怪", "灵异": "异能志怪",
-    }
+    # 题材标签 → 目录的解析已统一到 core.knowledge_resolver（目录名直配 + 别名回退），
+    # 此处不再维护映射表；新增体裁只需在 genre_skills/ 下建同名目录即可被自动吸收。
 
     async def _load_method_pack(self, kernel: Any, project_id: str) -> list[dict[str, Any]]:
         """根据项目篇幅加载方法论包 + 通用写作技巧包 + 题材技能包."""
@@ -203,28 +194,37 @@ class OrchestrationEngine:
 
     @staticmethod
     def _load_genre_skills(genre_tags: list[str]) -> list[dict[str, Any]]:
-        """根据题材标签加载 genre_skills 内容."""
-        from pathlib import Path
-        loaded_dirs = set()
-        results = []
-        for tag in genre_tags:
-            dir_name = OrchestrationEngine._GENRE_SKILL_MAP.get(tag)
-            if not dir_name or dir_name in loaded_dirs:
-                continue
-            loaded_dirs.add(dir_name)
-            skill_dir = Path("knowledge_base/genre_skills") / dir_name
-            if not skill_dir.exists():
-                continue
-            # 读取创建小说正文 prompt（核心题材规则）
-            prompt_file = skill_dir / ".github" / "prompts" / "创建小说正文.prompt.md"
-            if prompt_file.exists():
-                text = prompt_file.read_text(encoding="utf-8").strip()
-                if text:
-                    # 截取关键部分（跳过 YAML front matter）
-                    if "---" in text[1:]:
-                        parts = text.split("---", 2)
-                        text = parts[2].strip() if len(parts) > 2 else text
-                    results.append({"content": text[:2000], "category": "writing_tip", "metadata": {"source": f"genre:{dir_name}", "file": "创建小说正文.prompt.md"}})
+        """根据题材标签加载 genre_skills 内容（约定式自动发现）.
+
+        除创建小说正文 prompt 外，额外注入体裁靶值（G层阈值）与体裁红线，
+        让正文生成真正守住体裁规则。新增体裁只要建同名目录即被自动吸收。
+        """
+        from core import knowledge_resolver as kr
+
+        results: list[dict[str, Any]] = []
+        # 1) 体裁阶段提示：创建小说正文 prompt（约定槽位，自动发现）
+        for text in kr.genre_stage_prompt(genre_tags, "创建小说正文"):
+            results.append({
+                "content": text[:2000],
+                "category": "writing_tip",
+                "metadata": {"source": "genre:stage_prompt", "file": "创建小说正文.prompt.md"},
+            })
+        # 2) 体裁靶值（G 层量化阈值）
+        targets = kr.genre_targets(genre_tags)
+        if targets:
+            tv_lines = "\n".join(f"- {k}：{v}" for k, v in targets.items())
+            results.append({
+                "content": f"## 本体裁量化靶值（按此取值，非通用默认）\n{tv_lines}",
+                "category": "writing_tip",
+                "metadata": {"source": "genre:targets", "file": "靶值.md"},
+            })
+        # 3) 体裁红线（违反即错，与通用红线一起守）
+        for block in kr.genre_boundaries(genre_tags):
+            results.append({
+                "content": block[:1500],
+                "category": "writing_tip",
+                "metadata": {"source": "genre:boundary", "file": "题材边界/靶值§二"},
+            })
         return results
 
     @staticmethod
