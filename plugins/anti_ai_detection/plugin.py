@@ -282,18 +282,35 @@ class AntiAIDetectionPlugin(IQualityGate):
 
         matches = self._detector.detect(content) if self._detector else []
         match_dicts = [
-            {"category": m.category, "matched_items": m.matched_items}
+            {
+                "category": m.category,
+                "severity": m.severity,
+                "count": m.count,
+                "matched_items": m.matched_items,
+            }
             for m in matches
         ]
 
-        # 计算AI分数和详细检测数据
-        ai_score = self._detector.calculate_ai_score(content) if self._detector else 0.0
-        detection_details = {}
+        # AI 分数：matches 是模式列表，text 传正文以启用全维度评分
+        # （此前误把 content 当 matches 传入，会逐字符遍历并 AttributeError 崩溃）
+        ai_score = (
+            self._detector.calculate_ai_score(matches, text=content)
+            if self._detector else 0.0
+        )
+
+        # 详细检测维度：只把"已判定异常"的项作为数值回填，供诊断报告精确定位。
+        # build_diagnosis_report 仅接受数值（dict 会被 isinstance 过滤），故必须抽成数值。
+        detection_details: dict[str, Any] = {}
         if self._detector:
-            detection_details = {
-                "sentence_uniformity": self._detector.detect_uniform_sentences(content),
-                "dialogue_ratio": self._detector.check_dialogue_quotes(content),
-            }
+            sent = self._detector.detect_uniform_sentences(content)
+            if sent.get("is_uniform"):
+                detection_details["sentence_uniformity"] = sent.get("sd")
+            para = self._detector.check_paragraph_structure(content)
+            if para.get("is_uniform"):
+                detection_details["paragraph_uniformity"] = para.get("sd")
+            dlg = self._detector.check_dialogue_ratio(content)
+            if dlg.get("is_abnormal") and dlg.get("total_chars"):
+                detection_details["dialogue_ratio"] = round(dlg["ratio"] / 100.0, 3)
 
         return await self._humanizer.humanize(
             content,

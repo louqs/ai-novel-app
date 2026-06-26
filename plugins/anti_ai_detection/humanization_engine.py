@@ -411,21 +411,29 @@ def build_diagnosis_report(
     # 收集所有问题
     issues = []
 
-    # 从 detected_patterns 提取问题
+    # 从 detected_patterns 提取问题（兼容对象与字典两种形态）
     if detected_patterns:
         for p in detected_patterns:
-            if hasattr(p, 'severity') and p.severity in ('high', 'medium'):
-                category = getattr(p, 'category', '未知')
-                matched = getattr(p, 'matched_items', [])
-                count = getattr(p, 'count', 0)
-                sev = '🔴 严重' if p.severity == 'high' else '🟡 中等'
-                items_str = '、'.join(matched[:5])
+            if isinstance(p, dict):
+                severity = p.get("severity", "medium")
+                category = p.get("category", "未知")
+                matched = p.get("matched_items", [])
+                count = p.get("count", 0)
+            else:
+                severity = getattr(p, "severity", "medium")
+                category = getattr(p, "category", "未知")
+                matched = getattr(p, "matched_items", [])
+                count = getattr(p, "count", 0)
+
+            if severity in ("high", "medium"):
+                sev = "🔴 严重" if severity == "high" else "🟡 中等"
+                items_str = "、".join(matched[:5])
                 if len(matched) > 5:
-                    items_str += f'等{len(matched)}项'
+                    items_str += f"等{len(matched)}项"
                 issues.append({
-                    'severity': p.severity,
-                    'text': f"{sev} **{category}**: {items_str} (出现{count}次)",
-                    'category': category,
+                    "severity": severity,
+                    "text": f"{sev} **{category}**: {items_str} (出现{count}次)",
+                    "category": category,
                 })
 
     # 从 detection_details 提取维度信息

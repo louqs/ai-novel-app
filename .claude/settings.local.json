@@ -136,7 +136,11 @@
       "Bash(python -c \"import pypdf; print\\('pypdf OK'\\)\")",
       "Bash(python -c \"import multipart; print\\('multipart OK now'\\)\")",
       "Bash(python -c \"import ast; [ast.parse\\(open\\(f,encoding='utf-8'\\).read\\(\\)\\) for f in ['core/zhuque_report_parser.py','web/backend/routes/workbench.py','core/text_transformer.py','plugins/pipeline_editor/plugin.py']]; print\\('py syntax OK'\\)\")",
-      "Bash(python -m pytest tests/test_zhuque_report_parser.py tests/test_pipeline_editor.py -q)"
+      "Bash(python -m pytest tests/test_zhuque_report_parser.py tests/test_pipeline_editor.py -q)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('plugins/anti_ai_detection/plugin.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('plugins/anti_ai_detection/humanization_engine.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('core/text_transformer.py',encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 python -m pytest tests/test_pipeline_editor.py tests/test_zhuque_report_parser.py -q -m smoke)",
+      "Bash(PYTHONIOENCODING=utf-8 python -m pytest tests/ -q -m smoke)",
+      "Bash(PYTHONIOENCODING=utf-8 python -m pytest tests/test_anti_ai_reduce.py -q)"
     ]
   }
 }

@@ -194,13 +194,14 @@ class TextTransformer:
         *,
         threshold: float = 0.2,
         mode: str = "standard",
+        max_rounds: int = 2,
         **kwargs: Any,
     ) -> StepResult:
-        """检测AI率 + 超标则降重.
+        """检测AI率 + 超标则降重（有界重试）.
 
         1. 调用 anti-ai-detection.detect() 获取 ai_score
-        2. 如果 ai_score > threshold，调用 deai() 降重
-        3. 降重后再次检测
+        2. 如果 AI率 > threshold，调用 deai() 降重
+        3. 降重后再次检测；仍超标则再降重，最多 max_rounds 轮
         """
         entry = await self._kernel.get_plugin("anti-ai-detection")
         if not entry or not entry.instance:
@@ -217,23 +218,37 @@ class TextTransformer:
                 step="detect_reduce", input_text=content, output_text=content,
                 changed=False,
                 metadata={"ai_score_before": ai_rate, "threshold": threshold,
-                          "reduction_applied": False},
+                          "reduction_applied": False, "rounds": 0},
             )
 
-        # 需要降重
-        logger.info("AI率 %.1f%% 超过阈值 %.1f%%, 开始降重", ai_rate * 100, threshold * 100)
-        deai_result = await self.deai(content, mode=mode, **kwargs)
-        reduced = deai_result.output_text
+        # 需要降重：逐轮重写，压到阈值下即停
+        rounds = max(1, max_rounds)
+        current = content
+        ai_rate_cur = ai_rate
+        rate_trace = [ai_rate]
+        applied = 0
 
-        # 再次检测
-        after_detect = await detector.detect(reduced)
-        ai_rate_after = round(1.0 - after_detect.get("ai_score", human_score), 3)
+        for r in range(rounds):
+            logger.info("第%d轮降重：AI率 %.1f%% 超过阈值 %.1f%%", r + 1, ai_rate_cur * 100, threshold * 100)
+            deai_result = await self.deai(current, mode=mode, **kwargs)
+            reduced = deai_result.output_text
+            applied += 1
+
+            after_detect = await detector.detect(reduced)
+            ai_rate_after = round(1.0 - after_detect.get("ai_score", 1.0 - ai_rate_cur), 3)
+            rate_trace.append(ai_rate_after)
+
+            current = reduced
+            ai_rate_cur = ai_rate_after
+            if ai_rate_after <= threshold:
+                break
 
         return StepResult(
-            step="detect_reduce", input_text=content, output_text=reduced,
-            changed=content != reduced,
-            metadata={"ai_score_before": ai_rate, "ai_score_after": ai_rate_after,
-                      "threshold": threshold, "reduction_applied": True},
+            step="detect_reduce", input_text=content, output_text=current,
+            changed=content != current,
+            metadata={"ai_score_before": ai_rate, "ai_score_after": ai_rate_cur,
+                      "threshold": threshold, "reduction_applied": current != content,
+                      "rounds": applied, "rate_trace": rate_trace},
         )
 
     # ---- 内部 ----
