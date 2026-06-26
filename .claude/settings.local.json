@@ -140,7 +140,10 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('plugins/anti_ai_detection/plugin.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('plugins/anti_ai_detection/humanization_engine.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('core/text_transformer.py',encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
       "Bash(PYTHONIOENCODING=utf-8 python -m pytest tests/test_pipeline_editor.py tests/test_zhuque_report_parser.py -q -m smoke)",
       "Bash(PYTHONIOENCODING=utf-8 python -m pytest tests/ -q -m smoke)",
-      "Bash(PYTHONIOENCODING=utf-8 python -m pytest tests/test_anti_ai_reduce.py -q)"
+      "Bash(PYTHONIOENCODING=utf-8 python -m pytest tests/test_anti_ai_reduce.py -q)",
+      "Bash(./.venv/Scripts/python.exe -m pip install \"python-multipart>=0.0.18\" \"pypdf>=5.0\")",
+      "Bash(./.venv/Scripts/python.exe -c \"import multipart, pypdf; print\\('multipart', multipart.__version__\\); print\\('pypdf', pypdf.__version__\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c \"from web.backend.routes import workbench; print\\('workbench route module imported OK'\\)\")"
     ]
   }
 }

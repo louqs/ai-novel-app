@@ -132,11 +132,25 @@ scripts/writing_tools/
 
 ## 开发命令
 
+> ⚠️ **Python 环境约定（所有 AI / 贡献者必读）**
+> 本机同时存在**全局 Python**（`D:\environment\python\python314`）和**项目虚拟环境 `.venv`**。
+> 服务器（`start.bat` / uvicorn）和正式运行**只跑 `.venv`**。
+> **装包、跑脚本、跑测试一律走 `.venv` 的解释器**，禁止裸 `pip` / 裸 `python`（会装进全局，导致 `.venv` 里 ImportError、服务起不来——例如曾出现 `python-multipart` 装进全局但 `.venv` 缺失，FastAPI 注册上传端点直接 RuntimeError）。
+>
+> ```bash
+> # 装包（正确姿势）
+> ./.venv/Scripts/python.exe -m pip install <包名>
+> # 跑脚本 / 测试
+> ./.venv/Scripts/python.exe -m pytest tests/ -v
+> ./.venv/Scripts/python.exe -m web.backend.main
+> ```
+> 加新依赖时，同步写进 `pyproject.toml` 和 `requirements.txt`，再用上面的命令装进 `.venv`。
+
 ```bash
-# 安装依赖
-pip install -e ".[dev]"
+# 安装依赖（务必用 .venv 的解释器，见上方约定）
+./.venv/Scripts/python.exe -m pip install -e ".[dev]"
 # 或
-pip install -r requirements.txt
+./.venv/Scripts/python.exe -m pip install -r requirements.txt
 
 # 运行测试
 pytest tests/ -v                    # 运行所有测试
