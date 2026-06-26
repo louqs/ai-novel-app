@@ -38,6 +38,19 @@
 .pe-compare-header{padding:8px 12px;background:var(--surface2);border-radius:8px 8px 0 0;font-size:12px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
 .pe-compare-body{flex:1;padding:12px;background:var(--bg);border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;overflow-y:auto;font-size:13px;line-height:1.9;font-family:inherit}
 .pe-compare-body textarea{width:100%;height:100%;border:none;background:transparent;color:var(--text);font-size:13px;line-height:1.9;font-family:inherit;resize:none;outline:none}
+/* 逐行并排对齐：单滚动容器，每对段落同一行，左右两格天然等高，无需滚动同步 */
+.pe-grid-head{display:flex;gap:12px}
+.pe-grid-head>div{flex:1;padding:8px 12px;background:var(--surface2);border-radius:8px 8px 0 0;font-size:12px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
+.pe-grid{max-height:600px;overflow-y:auto;border:1px solid var(--border);border-radius:0 0 8px 8px;background:var(--bg)}
+.pe-row{display:flex;gap:12px;border-bottom:1px solid var(--border);cursor:pointer;transition:background 0.12s}
+.pe-row:last-child{border-bottom:none}
+.pe-row:hover{background:var(--surface)}
+.pe-row.pe-row-active{background:rgba(124,92,252,0.12);box-shadow:inset 3px 0 0 var(--accent)}
+.pe-row.pe-row-changed{background:rgba(255,193,7,0.07)}
+.pe-row.pe-row-changed:hover{background:rgba(255,193,7,0.14)}
+.pe-cell{flex:1;padding:8px 12px;font-size:13px;line-height:1.9;min-width:0;word-break:break-word;border-left:3px solid transparent}
+.pe-row.pe-row-changed .pe-cell{border-left-color:var(--warn)}
+.pe-cell-empty{opacity:0.4;font-style:italic}
 
 /* inline diff 高亮 */
 .diff-para{padding:4px 6px;margin-bottom:4px;border-radius:4px;transition:background 0.15s}
@@ -199,29 +212,23 @@
             </div>
         </div>
 
-        <div class="pe-compare">
-            <!-- 左栏：原文 -->
-            <div class="pe-compare-col">
-                <div class="pe-compare-header">
-                    <span>📄 原文 <span id="pe-orig-title" style="color:var(--text-muted);font-weight:400;font-size:11px"></span></span>
-                    <span id="pe-orig-count" style="color:var(--text-muted);font-weight:400">0 字</span>
-                </div>
-                <div class="pe-compare-body" id="pe-col-orig"></div>
+        <!-- 表头（不滚动）-->
+        <div class="pe-grid-head">
+            <div>
+                <span>📄 原文 <span id="pe-orig-title" style="color:var(--text-muted);font-weight:400;font-size:11px"></span></span>
+                <span id="pe-orig-count" style="color:var(--text-muted);font-weight:400">0 字</span>
             </div>
-            <!-- 右栏：优化版（inline diff） -->
-            <div class="pe-compare-col">
-                <div class="pe-compare-header">
-                    <span>✨ 优化版 <span id="pe-opt-title" style="color:var(--text-muted);font-weight:400;font-size:11px"></span></span>
-                    <span>
-                        <span id="pe-opt-count" style="color:var(--text-muted);font-weight:400;margin-right:8px">0 字</span>
-                        <button class="btn btn-sm btn-primary" onclick="peApplyResult()" style="font-size:10px">✅ 应用到章节</button>
-                        <button class="btn btn-sm" onclick="peSaveResult()" style="font-size:10px">💾 保存</button>
-                        <button class="btn btn-sm" onclick="peCopyResult()" style="font-size:10px">📋 复制</button>
-                    </span>
-                </div>
-                <div class="pe-compare-body" id="pe-col-opt"></div>
+            <div>
+                <span>✨ 优化版 <span id="pe-opt-title" style="color:var(--text-muted);font-weight:400;font-size:11px"></span></span>
+                <span>
+                    <span id="pe-opt-count" style="color:var(--text-muted);font-weight:400;margin-right:8px">0 字</span>
+                    <button class="btn btn-sm btn-primary" onclick="peApplyResult()" style="font-size:10px">✅ 应用到章节</button>
+                    <button class="btn btn-sm" onclick="peCopyResult()" style="font-size:10px">📋 复制</button>
+                </span>
             </div>
         </div>
+        <!-- 单滚动容器：逐行并排，左右天然对齐 -->
+        <div class="pe-grid" id="pe-grid"></div>
 
         <!-- 解释面板 -->
         <div id="pe-explain" class="pe-explain show">
@@ -236,5 +243,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/pipeline_editor.js?v=11"></script>
+<script src="/static/pipeline_editor.js?v=12"></script>
 {% endblock %}

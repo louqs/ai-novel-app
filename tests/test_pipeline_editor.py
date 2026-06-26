@@ -292,3 +292,42 @@ async def test_report_counts_reduce_changes_no_false_unchanged():
     assert "未发现需修改段落" not in report["summary"], "降重改了内容不应说未改动"
     assert report["changes"], "应统计到降重改动"
     assert report["changes"][0]["evidence_source"] == "AI检测降重"
+
+
+@pytest.mark.asyncio
+async def test_detect_reduce_force_mode_for_zhuque():
+    """force=True：外部判据(朱雀)判超标，本地全文率即便达标也逐段降重，且保结构."""
+    para0 = "他心中涌起一股莫名的情绪，不禁感到一阵复杂的悸动，整个世界安静了下来。"
+    para1 = "桌上一杯凉茶。"
+    content = para0 + "\n\n" + para1
+
+    class FakeDetector:
+        async def detect(self, text):
+            # 全文人类度高(0.85→AI率0.15达标)，但 para0 单段偏 AI
+            if text == content:
+                return {"ai_score": 0.85, "pattern_matches": []}
+            heavy = "心中涌起" in text
+            return {"ai_score": 0.5 if heavy else 0.9,
+                    "pattern_matches": [{"category": "情感标签化"}] if heavy else []}
+
+    class _Entry:
+        instance = FakeDetector()
+
+    revised0 = "他说不清心里是什么滋味，胸口闷了闷，屋里一下子静得能听见自己呼吸。"
+    llm = '{"revisions":[{"paragraph_index":0,"revised_text":"' + revised0 + '","applied_fixes":["情感标签化"]}]}'
+    pe = _make_plugin(llm, [BASELINE, AFTER])
+
+    async def _get_plugin(name):
+        return _Entry()
+    pe._kernel.get_plugin = _get_plugin
+
+    # 不 force：全文达标 → 跳过
+    step_no = await pe._detect_reduce(content, "fanqie", ai_threshold=0.2, force=False)
+    assert step_no["reduction_applied"] is False
+
+    # force：即便全文达标也降重命中段，保留段落数
+    step = await pe._detect_reduce(content, "fanqie", ai_threshold=0.2, force=True)
+    assert step["reduction_applied"] is True
+    assert step["optimized"].count("\n\n") == content.count("\n\n")
+    assert revised0 in step["optimized"]
+    assert para1 in step["optimized"]  # 干净段保留

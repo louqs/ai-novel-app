@@ -641,12 +641,16 @@ class PipelineEditorPlugin:
         self, content: str, platform: str,
         ai_threshold: float = 0.2, humanize_mode: str = "unified",
         prev_ai_detection: dict | None = None,
+        *, force: bool = False,
     ) -> dict:
         """AI检测降重 — 逐段检测命中→只对命中段落定点降重（保留段落结构）.
 
         不再做全文盲重写：那会打乱段落结构（导致前端对齐错乱）且把文笔改差。
         改为：① 全文 AI 率达标则跳过；② 否则逐段检测，挑出 AI 痕迹最重的段落，
         连同命中的具体模式一次性喂给 LLM 定点重写；③ 每段带证据生成 change 记录。
+
+        force=True：外部判据（如朱雀）已判定超标，即使本地全文率达标也强制降重，
+        且无单段超阈值时按本地 AI 率挑最高的几段兜底（供朱雀回填/导入复用）。
         """
         empty = {
             "step": "detect", "name": "AI检测降重",
@@ -659,7 +663,7 @@ class PipelineEditorPlugin:
             ai_rate_before = None
             if prev_ai_detection and prev_ai_detection.get("ai_score") is not None:
                 ai_rate_before = round(1.0 - float(prev_ai_detection["ai_score"]), 3)
-            if ai_rate_before is not None and ai_rate_before <= ai_threshold:
+            if not force and ai_rate_before is not None and ai_rate_before <= ai_threshold:
                 empty["ai_score_before"] = empty["ai_score_after"] = ai_rate_before
                 empty["summary"] = f"AI率 {ai_rate_before:.0%}，未超阈值 {ai_threshold:.0%}，无需降重"
                 return empty
@@ -673,7 +677,7 @@ class PipelineEditorPlugin:
             # 全文实测 AI 率（无 prev 时兜底）
             whole = await detector.detect(content)
             ai_rate_before = round(1.0 - whole.get("ai_score", 1.0), 3)
-            if ai_rate_before <= ai_threshold:
+            if not force and ai_rate_before <= ai_threshold:
                 empty["ai_score_before"] = empty["ai_score_after"] = ai_rate_before
                 empty["summary"] = f"AI率 {ai_rate_before:.0%}，未超阈值 {ai_threshold:.0%}，无需降重"
                 return empty
@@ -681,18 +685,23 @@ class PipelineEditorPlugin:
             # 逐段检测，挑出 AI 痕迹段落（人类度越低越靠前），最多 6 段
             paragraphs = content.split("\n\n")
             scored: list[tuple[float, int, list[str]]] = []
+            all_scored: list[tuple[float, int, list[str]]] = []
             for i, p in enumerate(paragraphs):
                 ps = p.strip()
                 if len(ps) < 20:  # 太短的段（单句对话/拟声）不单独降重，噪声大
                     continue
                 pd = await detector.detect(ps)
                 p_ai = 1.0 - pd.get("ai_score", 1.0)
-                if p_ai <= ai_threshold:
-                    continue
                 hits = [m.get("category", "") for m in pd.get("pattern_matches", [])][:6]
-                scored.append((p_ai, i, hits))
+                all_scored.append((p_ai, i, hits))
+                if p_ai > ai_threshold:
+                    scored.append((p_ai, i, hits))
             scored.sort(reverse=True, key=lambda t: t[0])
+            all_scored.sort(reverse=True, key=lambda t: t[0])
             targets = scored[:6]
+            # force 兜底：无单段超阈值时，仍取本地 AI 率最高的最多 3 段降重
+            if not targets and force:
+                targets = all_scored[:3]
 
             if not targets:
                 empty["ai_score_before"] = empty["ai_score_after"] = ai_rate_before

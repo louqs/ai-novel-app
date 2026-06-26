@@ -365,52 +365,51 @@ function peShowResult(result) {
     }
 }
 
-// ===== 双栏对齐渲染（LCS 段落对齐：相同段配对，不同段标增删；同 data-pi 互导航）=====
+// ===== 逐行并排渲染（单容器，每对段落同一行，左右天然对齐）=====
 function peRenderAlignedColumns(original, optimized, annotMap) {
     var origParas = original.split(/\n\n+/).map(function(s){return s.trim();}).filter(function(s){return s.length;});
     var optParas = optimized.split(/\n\n+/).map(function(s){return s.trim();}).filter(function(s){return s.length;});
 
-    // LCS 对齐：以"完全相同的段落"为锚点配对，锚点之间的差异段按位配对/标增删
-    var rows = peAlignParas(origParas, optParas); // [{op, np, oi}]，oi=原文段索引（用于查 annotMap）
-    var origHtml = '', optHtml = '';
+    var rows = peAlignParas(origParas, optParas); // [{op, np, oi}]
+    var html = '';
 
     rows.forEach(function(row, pi) {
         var op = row.op, np = row.np;
         var changed = op !== np;
-        var cls = 'pe-para' + (changed ? ' changed' : '');
-        var navAttr = ' data-pi="' + pi + '" onclick="peNavTo(' + pi + ')"';
+        var rowCls = 'pe-row' + (changed ? ' pe-row-changed' : '');
 
-        // 原文栏（空段用占位，保持两栏行对齐）
+        // 左格：原文
+        var leftHtml;
         if (op === null) {
-            origHtml += '<div class="pe-para pe-para-empty" data-pi="' + pi + '">&nbsp;</div>';
+            leftHtml = '<div class="pe-cell pe-cell-empty">（新增，无对应原文）</div>';
         } else {
-            origHtml += '<div class="' + cls + '"' + navAttr + '>' + (esc(op) || '&nbsp;') + '</div>';
+            leftHtml = '<div class="pe-cell">' + (esc(op) || '&nbsp;') + '</div>';
         }
 
-        // 优化版栏
+        // 右格：优化版（字符 diff + 内联批注）
+        var rightHtml;
         if (np === null) {
-            // 原文有、优化版无 → 整段被删
-            optHtml += '<div class="pe-para changed pe-para-empty"' + navAttr + '><span class="diff-label">删除段落</span></div>';
+            rightHtml = '<div class="pe-cell pe-cell-empty"><span class="diff-label">删除段落</span></div>';
         } else {
             var bodyHtml;
             if (!changed) {
                 bodyHtml = esc(np) || '&nbsp;';
             } else if (op === null) {
-                bodyHtml = '<span class="diff-label">新增段落</span><span class="diff-line-add">' + esc(np) + '</span>';
+                bodyHtml = '<span class="diff-line-add">' + esc(np) + '</span>';
             } else {
                 bodyHtml = peCharDiff(op, np);
             }
-            optHtml += '<div class="' + cls + '"' + navAttr + '>';
-            optHtml += '<div class="pe-para-body">' + bodyHtml + '</div>';
-            // 批注按原文段索引 oi 查（后端 paragraph_index 是原文坐标）
+            rightHtml = '<div class="pe-cell"><div class="pe-para-body">' + bodyHtml + '</div>';
             if (changed && row.oi != null && annotMap[row.oi]) {
-                optHtml += peAnnotHtml(annotMap[row.oi]);
+                rightHtml += peAnnotHtml(annotMap[row.oi]);
             }
-            optHtml += '</div>';
+            rightHtml += '</div>';
         }
+
+        html += '<div class="' + rowCls + '" data-pi="' + pi + '" onclick="peNavTo(' + pi + ')">'
+              + leftHtml + rightHtml + '</div>';
     });
-    document.getElementById('pe-col-orig').innerHTML = origHtml;
-    document.getElementById('pe-col-opt').innerHTML = optHtml;
+    document.getElementById('pe-grid').innerHTML = html;
 }
 
 // LCS 段落对齐：返回行数组 [{op, np, oi}]
@@ -465,15 +464,16 @@ function peAnnotHtml(ch) {
     return html;
 }
 
-// 点击段落 → 两栏同时高亮 + 另一栏滚动到对应段
+// 点击某行 → 高亮该行（左右本就同一行，无需滚动同步）
 function peNavTo(pi) {
-    var both = document.querySelectorAll('#pe-col-orig .pe-para, #pe-col-opt .pe-para');
-    both.forEach(function(el) { el.classList.remove('pe-para-active'); });
-    var targets = document.querySelectorAll('.pe-para[data-pi="' + pi + '"]');
-    targets.forEach(function(el) {
-        el.classList.add('pe-para-active');
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    document.querySelectorAll('#pe-grid .pe-row').forEach(function(el) {
+        el.classList.remove('pe-row-active');
     });
+    var target = document.querySelector('#pe-grid .pe-row[data-pi="' + pi + '"]');
+    if (target) {
+        target.classList.add('pe-row-active');
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
 }
 
 // 逐字符 diff 算法

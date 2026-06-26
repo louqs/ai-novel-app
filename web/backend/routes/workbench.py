@@ -649,12 +649,20 @@ async def zhuque_reduce(project_id: str, data: dict):
                         f"均高于阈值 {ai_threshold:.0%}，无需降重"),
         }
 
-    # 执行降重（把朱雀判断的侧重点写进提示，给引擎更明确方向）
+    # 执行定点降重（逐段，保留段落结构；force=True 因外部判据已判超标）
+    reduced = content
+    changes: list = []
     try:
-        from core.text_transformer import TextTransformer
-        tr = TextTransformer(kernel)
-        step = await tr.deai(content, mode=humanize_mode)
-        reduced = step.output_text
+        pe_entry = await kernel.get_plugin("pipeline-editor")
+        if pe_entry and pe_entry.instance:
+            step = await pe_entry.instance._detect_reduce(
+                content, "fanqie", ai_threshold=ai_threshold,
+                humanize_mode=humanize_mode, force=True,
+            )
+            reduced = step.get("optimized", content)
+            changes = step.get("changes", [])
+        else:
+            raise RuntimeError("pipeline-editor 插件未加载")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"降重失败: {e}") from e
 
@@ -671,7 +679,8 @@ async def zhuque_reduce(project_id: str, data: dict):
             pass
 
     return {
-        "changed": True, "reduced_text": reduced,
+        "changed": content != reduced, "reduced_text": reduced,
+        "changes": changes,
         "local_human": round(local_human, 3),
         "zhuque_human": round(zhuque_human, 3),
         "effective_human": round(effective_human, 3),
@@ -767,11 +776,18 @@ async def import_zhuque_report(
         result["summary"] = f"朱雀整体AI率 {ai_rate:.0%}，但未找到第{chapter_num}章内容，无法降重"
         return result
 
+    # 定点降重（逐段，保留段落结构；force=True 因朱雀已判超标）
+    reduced = content
     try:
-        from core.text_transformer import TextTransformer
-        tr = TextTransformer(kernel)
-        step = await tr.deai(content, mode=humanize_mode)
-        reduced = step.output_text
+        pe_entry = await kernel.get_plugin("pipeline-editor")
+        if pe_entry and pe_entry.instance:
+            step = await pe_entry.instance._detect_reduce(
+                content, "fanqie", ai_threshold=ai_threshold,
+                humanize_mode=humanize_mode, force=True,
+            )
+            reduced = step.get("optimized", content)
+        else:
+            raise RuntimeError("pipeline-editor 插件未加载")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"降重失败: {e}") from e
 

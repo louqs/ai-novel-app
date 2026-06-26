@@ -147,7 +147,8 @@
       "Bash(./.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('plugins/pipeline_editor/plugin.py',encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
       "Bash(./.venv/Scripts/python.exe -m pytest tests/test_pipeline_editor.py tests/test_anti_ai_reduce.py -q)",
       "Bash(./.venv/Scripts/python.exe -m pytest tests/test_pipeline_editor.py -q)",
-      "Bash(./.venv/Scripts/python.exe -m pytest tests/ -q -m smoke)"
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/ -q -m smoke)",
+      "Bash(./.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('plugins/pipeline_editor/plugin.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('web/backend/routes/workbench.py',encoding='utf-8'\\).read\\(\\)\\); print\\('py syntax OK'\\)\")"
     ]
   }
 }
