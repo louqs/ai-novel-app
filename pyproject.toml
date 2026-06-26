@@ -22,6 +22,8 @@ dependencies = [
     "jieba>=0.42",
     "tenacity>=9.0",
     "watchfiles>=0.24",
+    "pypdf>=5.0",
+    "python-multipart>=0.0.18",
 ]
 
 [project.optional-dependencies]

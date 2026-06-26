@@ -16,6 +16,7 @@
 .pe-ch-item:hover{background:var(--surface)}
 .pe-ch-item input[type="checkbox"]{width:16px;height:16px;cursor:pointer;accent-color:var(--accent);margin:0}
 .pe-ch-item .ch-name{flex:1;font-size:13px}
+.pe-ch-item.pe-ch-current{background:rgba(124,92,252,0.12);box-shadow:inset 3px 0 0 var(--accent)}
 
 /* 加载遮罩 */
 .pe-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.35);z-index:9999;display:none;justify-content:center;align-items:center}
@@ -48,10 +49,30 @@
 .diff-para .diff-char-add{background:rgba(76,175,80,0.25);border-radius:2px;padding:0 1px}
 .diff-para .diff-label{font-size:10px;color:var(--text-muted);margin-bottom:2px;display:block}
 
+/* 双栏对齐段落 */
+.pe-para{padding:4px 6px;margin-bottom:4px;border-radius:4px;cursor:pointer;transition:background 0.15s,box-shadow 0.15s;border-left:3px solid transparent}
+.pe-para:hover{background:var(--surface)}
+.pe-para.changed{background:rgba(255,193,7,0.10);border-left-color:var(--warn)}
+.pe-para.changed:hover{background:rgba(255,193,7,0.18)}
+.pe-para-active{box-shadow:0 0 0 2px var(--accent);background:rgba(124,92,252,0.10) !important}
+.pe-para .diff-label{font-size:10px;color:var(--text-muted);margin-bottom:2px;display:block}
+.pe-para .diff-line-del{color:var(--bad);text-decoration:line-through;background:rgba(244,67,54,0.08);padding:1px 3px;border-radius:2px}
+.pe-para .diff-line-add{color:var(--ok);background:rgba(76,175,80,0.08);padding:1px 3px;border-radius:2px}
+.pe-para .diff-char-del{background:rgba(244,67,54,0.25);border-radius:2px;padding:0 1px}
+.pe-para .diff-char-add{background:rgba(76,175,80,0.25);border-radius:2px;padding:0 1px}
+
+/* 内联批注（独立节点，user-select:none 防止被复制到正文）*/
+.pe-annot{margin-top:6px;padding:6px 8px;background:rgba(124,92,252,0.06);border-left:2px solid var(--accent);border-radius:0 4px 4px 0;font-size:11px;user-select:none}
+.pe-annot-tag{display:inline-block;background:var(--accent);color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;margin-right:4px}
+.pe-annot-src{display:inline-block;background:rgba(124,92,252,0.12);color:var(--accent);padding:1px 6px;border-radius:8px;font-size:10px}
+.pe-annot-reason{margin-top:4px;color:var(--text-muted);line-height:1.5}
+
 /* 解释面板 */
 .pe-explain{margin-top:16px;background:var(--surface2);border-radius:10px;overflow:hidden;display:none}
 .pe-explain.show{display:block}
+.pe-explain.collapsed .pe-explain-body{display:none}
 .pe-explain-header{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.pe-explain.collapsed .pe-explain-header{border-bottom:none}
 .pe-explain-body{padding:16px;font-size:13px;line-height:1.7}
 .pe-explain-section{margin-bottom:16px}
 .pe-explain-section h4{font-size:13px;margin:0 0 8px 0;color:var(--accent)}
@@ -60,6 +81,16 @@
 .pe-score-badge{display:inline-block;padding:4px 12px;border-radius:8px;font-weight:700;font-size:14px}
 .pe-score-before{background:rgba(244,67,54,0.12);color:var(--bad)}
 .pe-score-after{background:rgba(76,175,80,0.12);color:var(--ok)}
+
+/* 朱雀终检面板 */
+.pe-zhuque-panel{margin-top:12px;background:var(--surface2);border-radius:10px;overflow:hidden}
+.pe-zhuque-header{padding:11px 16px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:600;user-select:none}
+.pe-zhuque-header:hover{background:var(--surface)}
+.pe-zhuque-body{padding:14px 16px;border-top:1px solid var(--border)}
+.pe-zhuque-panel.collapsed .pe-zhuque-body{display:none}
+.pe-zhuque-panel.collapsed .pe-explain-header{border-bottom:none}
+.pe-zq-arrow{transition:transform 0.2s}
+.pe-zhuque-panel.collapsed .pe-zq-arrow{transform:rotate(-90deg)}
 
 /* 操作栏 */
 .pe-actions{display:flex;gap:8px;justify-content:flex-end;padding:12px 0;margin-top:8px;border-top:1px solid var(--border)}
@@ -89,11 +120,10 @@
                 </select>
             </div>
             <div class="field-group" style="min-width:140px">
-                <label>优化范围</label>
+                <label>检测范围</label>
                 <select id="pe-range" onchange="peUpdateRange()">
-                    <option value="single">单章优化</option>
-                    <option value="batch">批量优化</option>
-                    <option value="all">整个项目</option>
+                    <option value="single">单章检测</option>
+                    <option value="all">整个项目检测</option>
                 </select>
             </div>
             <div class="field-group" style="min-width:120px">
@@ -116,14 +146,10 @@
             </div>
         </div>
 
-        <!-- 批量章节列表 -->
+        <!-- 整个项目：已生成章节列表（只读，可点击查看各章优化结果） -->
         <div id="pe-batch-panel" style="display:none">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
-                <span style="font-size:11px;color:var(--text-muted)">已选 <span id="pe-batch-sel-count">0</span> 章</span>
-                <div style="display:flex;gap:6px">
-                    <button class="btn btn-sm" onclick="peBatchSelectAll()">全选</button>
-                    <button class="btn btn-sm" onclick="peBatchSelectNone()">全不选</button>
-                </div>
+                <span style="font-size:11px;color:var(--text-muted)">将检测 <span id="pe-batch-sel-count">0</span> 个已生成章节（点击章节可查看其优化结果）</span>
             </div>
             <div class="pe-chapter-list" id="pe-batch-list"></div>
         </div>
@@ -147,7 +173,7 @@
             <!-- 左栏：原文 -->
             <div class="pe-compare-col">
                 <div class="pe-compare-header">
-                    <span>📄 原文</span>
+                    <span>📄 原文 <span id="pe-orig-title" style="color:var(--text-muted);font-weight:400;font-size:11px"></span></span>
                     <span id="pe-orig-count" style="color:var(--text-muted);font-weight:400">0 字</span>
                 </div>
                 <div class="pe-compare-body" id="pe-col-orig"></div>
@@ -155,10 +181,11 @@
             <!-- 右栏：优化版（inline diff） -->
             <div class="pe-compare-col">
                 <div class="pe-compare-header">
-                    <span>✨ 优化版</span>
+                    <span>✨ 优化版 <span id="pe-opt-title" style="color:var(--text-muted);font-weight:400;font-size:11px"></span></span>
                     <span>
                         <span id="pe-opt-count" style="color:var(--text-muted);font-weight:400;margin-right:8px">0 字</span>
-                        <button class="btn btn-sm btn-primary" onclick="peSaveResult()" style="font-size:10px">💾 保存</button>
+                        <button class="btn btn-sm btn-primary" onclick="peApplyResult()" style="font-size:10px">✅ 应用到章节</button>
+                        <button class="btn btn-sm" onclick="peSaveResult()" style="font-size:10px">💾 保存</button>
                         <button class="btn btn-sm" onclick="peCopyResult()" style="font-size:10px">📋 复制</button>
                     </span>
                 </div>
@@ -167,17 +194,46 @@
         </div>
 
         <!-- 解释面板 -->
-        <div id="pe-explain" class="pe-explain">
+        <div id="pe-explain" class="pe-explain show">
             <div class="pe-explain-header">
                 <strong style="font-size:13px">📝 优化说明</strong>
-                <button class="btn btn-sm" onclick="document.getElementById('pe-explain').classList.toggle('show')">收起/展开</button>
+                <button class="btn btn-sm" onclick="peToggleExplain(this)">收起</button>
             </div>
             <div class="pe-explain-body" id="pe-explain-body"></div>
+        </div>
+
+        <!-- 朱雀终检面板（折叠，对比结果出现后才显示） -->
+        <div id="pe-zhuque" class="pe-zhuque-panel" style="display:none">
+            <div class="pe-zhuque-header" onclick="peToggleZhuque(this)">
+                <span>🦅 朱雀 AIGC 终检（可选，比本地检测更准确）</span>
+                <span class="pe-zq-arrow">▼</span>
+            </div>
+            <div class="pe-zhuque-body" id="pe-zhuque-body">
+                <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">
+                    朱雀检测对中文小说准确率 95%+，本地检测可能有漏检。<br>
+                    <strong>方式一</strong>：导出文本 → 粘贴到朱雀检测 → 手动回填 AI 率。<br>
+                    <strong>方式二（推荐）</strong>：朱雀页「打印为PDF」存下报告 → 导入PDF，系统自动解析逐段AI率并降重。<br>
+                    朱雀分数与本地检测取<strong>更严格的一方</strong>作为降重判据。
+                </p>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+                    <button class="btn btn-sm" onclick="peZhuqueExport()">📥 导出文本</button>
+                    <a href="https://matrix.tencent.com/ai-detect/ai_gen" target="_blank" rel="noopener" class="btn btn-sm">🔗 打开朱雀检测</a>
+                    <button class="btn btn-sm" onclick="document.getElementById('pe-zq-file').click()">📄 导入报告PDF</button>
+                    <input id="pe-zq-file" type="file" accept="application/pdf,.pdf" style="display:none" onchange="peZhuqueImport(this)">
+                    <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+                        <label style="font-size:12px;white-space:nowrap">手动回填 AI 率</label>
+                        <input id="pe-zq-rate" type="number" min="0" max="100" step="1" placeholder="如 68" style="width:72px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px">
+                        <span style="font-size:12px;color:var(--text-muted)">%</span>
+                        <button class="btn btn-sm btn-primary" onclick="peZhuqueReduce()">应用降重</button>
+                    </div>
+                </div>
+                <div id="pe-zq-result" style="display:none;font-size:12px;padding:8px 10px;background:var(--bg);border-radius:6px;border:1px solid var(--border)"></div>
+            </div>
         </div>
     </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/pipeline_editor.js?v=6"></script>
+<script src="/static/pipeline_editor.js?v=10"></script>
 {% endblock %}

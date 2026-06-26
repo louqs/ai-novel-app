@@ -91,19 +91,20 @@ function peUpdateRange() {
     if (range !== 'single') peRenderBatchList();
 }
 
-// ===== 批量章节列表 =====
+// ===== 已生成章节列表（只读，点击查看各章优化结果）=====
 function peRenderBatchList() {
     var container = document.getElementById('pe-batch-list');
     var html = '';
     var count = 0;
-    peState.batchChapters.forEach(function(ch, i) {
+    peState.batchChapters.forEach(function(ch) {
         if (ch.status !== 'completed') return;
         count++;
-        var optLabel = ch._optTime ? '<span style="font-size:10px;color:var(--ok);margin-left:auto;cursor:pointer" onclick="event.stopPropagation();peViewChOptResult(' + ch.chapter_number + ',' + (ch.volume_number || 1) + ')">✅ ' + ch._optTime + '</span>' : '';
-        html += '<label class="pe-ch-item"><input type="checkbox" class="pe-ch-cb" data-idx="' + i + '" checked onchange="peUpdateBatchCount()"><span class="ch-name" style="cursor:pointer" onclick="event.stopPropagation();peViewChOptResult(' + ch.chapter_number + ',' + (ch.volume_number || 1) + ')">' + ch.chapter_number + '. ' + esc(ch.title) + '</span>' + optLabel + '</label>';
+        var optLabel = ch._optTime ? '<span style="font-size:10px;color:var(--ok);margin-left:auto">✅ ' + ch._optTime + '</span>' : '';
+        var active = (peState.chapterNum === ch.chapter_number && peState.volumeNum === (ch.volume_number || 1)) ? ' pe-ch-current' : '';
+        html += '<div class="pe-ch-item' + active + '" style="cursor:pointer" onclick="peViewChOptResult(' + ch.chapter_number + ',' + (ch.volume_number || 1) + ')"><span class="ch-name">' + ch.chapter_number + '. ' + esc(ch.title) + '</span>' + optLabel + '</div>';
     });
     container.innerHTML = count === 0 ? '<p class="muted" style="padding:12px;text-align:center">暂无已生成的章节</p>' : html;
-    peUpdateBatchCount();
+    document.getElementById('pe-batch-sel-count').textContent = count;
 }
 
 // ===== 加载所有章节的优化状态（异步，不阻塞渲染） =====
@@ -125,11 +126,6 @@ async function peLoadAllOptStatus() {
     });
     peRenderBatchList(); // 更新显示
 }
-function peUpdateBatchCount() {
-    document.getElementById('pe-batch-sel-count').textContent = document.querySelectorAll('.pe-ch-cb:checked').length;
-}
-function peBatchSelectAll() { document.querySelectorAll('.pe-ch-cb').forEach(function(c) { c.checked = true; }); peUpdateBatchCount(); }
-function peBatchSelectNone() { document.querySelectorAll('.pe-ch-cb').forEach(function(c) { c.checked = false; }); peUpdateBatchCount(); }
 
 // ===== 选择章节时自动加载历史优化结果 =====
 async function peLoadOptResult() {
@@ -208,25 +204,14 @@ async function peStartSingle(pid) {
     } finally { peSetRunning(false); }
 }
 
-// ===== 批量优化 =====
+// ===== 整个项目检测（全部已生成章节）=====
 async function peStartBatch(pid, range) {
-    var selected = [];
-    if (range === 'all') {
-        selected = peState.batchChapters.filter(function(ch) { return ch.status === 'completed'; });
-    } else {
-        document.querySelectorAll('.pe-ch-cb:checked').forEach(function(cb) {
-            var idx = parseInt(cb.getAttribute('data-idx'));
-            if (peState.batchChapters[idx] && peState.batchChapters[idx].status === 'completed') {
-                selected.push(peState.batchChapters[idx]);
-            }
-        });
-    }
-    if (selected.length === 0) { toast('没有可优化的章节', 'error'); return; }
+    var selected = peState.batchChapters.filter(function(ch) { return ch.status === 'completed'; });
+    if (selected.length === 0) { toast('没有已生成的章节可检测', 'error'); return; }
 
     peState.batchRunning = true;
     peState.batchCancelled = false;
-    var rangeLabel = range === 'all' ? '整个项目' : '选中章节';
-    peSetRunning(true, '正在优化' + rangeLabel + '，共' + selected.length + '章（约' + selected.length * 2 + '-' + selected.length * 3 + '分钟）...');
+    peSetRunning(true, '正在检测整个项目，共' + selected.length + '章（约' + selected.length * 2 + '-' + selected.length * 3 + '分钟）...');
     document.getElementById('pe-batch-prog').style.display = 'block';
 
     var total = selected.length, done = 0, failed = 0;
@@ -239,7 +224,7 @@ async function peStartBatch(pid, range) {
         document.getElementById('pe-batch-prog-text').textContent = done + '/' + total;
         document.getElementById('pe-batch-bar').style.width = Math.round(done / total * 100) + '%';
 
-        itemsHtml += '<div class="pe-batch-item" id="pe-bi-' + i + '"><span>⏳</span><span style="flex:1">' + ch.chapter_number + '. ' + esc(ch.title) + '</span><span style="color:var(--text-muted)">执行中...</span></div>';
+        itemsHtml += '<div class="pe-batch-item" id="pe-bi-' + i + '" style="cursor:pointer" onclick="peViewChOptResult(' + ch.chapter_number + ',' + (ch.volume_number || 1) + ')"><span>⏳</span><span style="flex:1">' + ch.chapter_number + '. ' + esc(ch.title) + '</span><span style="color:var(--text-muted)">执行中...</span></div>';
         document.getElementById('pe-batch-items').innerHTML = itemsHtml;
 
         peState.abortCtrl = new AbortController();
@@ -252,6 +237,9 @@ async function peStartBatch(pid, range) {
             });
             if (!resp.ok) throw new Error('请求失败');
             var result = await resp.json();
+            result._chapterNum = ch.chapter_number;
+            result._volumeNum = ch.volume_number || 1;
+            result._chapterTitle = ch.title || '';
             done++; lastResult = result;
             var item = document.getElementById('pe-bi-' + i);
             if (item) {
@@ -278,7 +266,7 @@ async function peStartBatch(pid, range) {
     document.getElementById('pe-batch-prog-text').textContent = done + '/' + total;
     document.getElementById('pe-batch-bar').style.width = '100%';
     if (lastResult) peShowResult(lastResult);
-    toast(peState.batchCancelled ? '已取消' : '批量完成: ' + done + '章, 失败' + failed + '章', peState.batchCancelled ? 'info' : 'success');
+    toast(peState.batchCancelled ? '已取消' : '整个项目检测完成: ' + done + '章, 失败' + failed + '章', peState.batchCancelled ? 'info' : 'success');
     peSetRunning(false);
 }
 
@@ -309,6 +297,26 @@ function peAbortSignal() {
     return peState.abortCtrl.signal;
 }
 
+// ===== 对比区表头：显示当前展示的是哪一章 =====
+function peUpdateCompareHeader(title) {
+    // 未传标题时，从已生成章节列表里查
+    if (!title && peState.chapterNum && peState.batchChapters) {
+        var hit = peState.batchChapters.find(function(c) {
+            return c.chapter_number === peState.chapterNum && (c.volume_number || 1) === (peState.volumeNum || 1);
+        });
+        if (hit) title = hit.title;
+    }
+    var label = peState.chapterNum ? ('· 第' + peState.chapterNum + '章' + (title ? ' ' + esc(title) : '')) : '';
+    var oh = document.getElementById('pe-orig-title');
+    var nh = document.getElementById('pe-opt-title');
+    if (oh) oh.textContent = label;
+    if (nh) nh.textContent = label;
+    // 同步左侧章节列表高亮
+    if (typeof peRenderBatchList === 'function' && document.getElementById('pe-batch-panel').style.display !== 'none') {
+        peRenderBatchList();
+    }
+}
+
 // ===== 结果展示 =====
 function peShowResult(result) {
     peState.stepsResult = result;
@@ -316,15 +324,36 @@ function peShowResult(result) {
     var original = result.original || '';
     var optimized = result.current_content || '';
 
-    document.getElementById('pe-compare-area').style.display = 'block';
+    // 记录当前展示的章节（批量结果带 _chapterNum；单章走 peState 已有值）
+    if (result._chapterNum) {
+        peState.chapterNum = result._chapterNum;
+        peState.volumeNum = result._volumeNum || 1;
+    }
+    peUpdateCompareHeader(result._chapterTitle);
 
-    // 原文栏（纯文本）
-    document.getElementById('pe-col-orig').innerHTML = '<div style="white-space:pre-wrap">' + esc(original) + '</div>';
+    document.getElementById('pe-compare-area').style.display = 'block';
+    // 显示朱雀面板（重置回填状态）
+    var zqPanel = document.getElementById('pe-zhuque');
+    if (zqPanel) {
+        zqPanel.style.display = 'block';
+        document.getElementById('pe-zq-rate').value = '';
+        document.getElementById('pe-zq-result').style.display = 'none';
+    }
     document.getElementById('pe-orig-count').textContent = original.length + ' 字';
     document.getElementById('pe-opt-count').textContent = optimized.length + ' 字';
 
-    // 优化版栏（inline diff）
-    peRenderInlineDiff(original, optimized);
+    // 段落级批注映射：paragraph_index -> change（来自实测报告，已带 paragraph_index）
+    var annotMap = {};
+    if (result.explanation && result.explanation.changes) {
+        result.explanation.changes.forEach(function(ch) {
+            if (ch.paragraph_index !== null && ch.paragraph_index !== undefined) {
+                annotMap[ch.paragraph_index] = ch;
+            }
+        });
+    }
+
+    // 双栏按段落索引对齐渲染
+    peRenderAlignedColumns(original, optimized, annotMap);
 
     // 解释面板
     if (result.explanation) {
@@ -334,34 +363,64 @@ function peShowResult(result) {
     }
 }
 
-// ===== Inline Diff 渲染 =====
-function peRenderInlineDiff(original, optimized) {
+// ===== 双栏对齐渲染（原文 / 优化版，同索引 data-pi，点击互相导航）=====
+function peRenderAlignedColumns(original, optimized, annotMap) {
     var origParas = original.split(/\n\n+/);
     var optParas = optimized.split(/\n\n+/);
     var maxLen = Math.max(origParas.length, optParas.length);
-    var html = '';
+    var origHtml = '', optHtml = '';
 
     for (var i = 0; i < maxLen; i++) {
         var op = (origParas[i] || '').trim();
         var np = (optParas[i] || '').trim();
+        var changed = op !== np;
+        var cls = 'pe-para' + (changed ? ' changed' : '');
 
-        if (op === np) {
-            // 无变化
-            html += '<div class="diff-para">' + esc(op) + '</div>';
+        // 原文栏
+        origHtml += '<div class="' + cls + '" data-pi="' + i + '" onclick="peNavTo(' + i + ')">' + (esc(op) || '&nbsp;') + '</div>';
+
+        // 优化版栏：正文（字符 diff）+ 内联批注（独立节点，不进正文）
+        var bodyHtml;
+        if (!changed) {
+            bodyHtml = esc(np) || '&nbsp;';
         } else if (!op && np) {
-            // 新增段落
-            html += '<div class="diff-para changed"><span class="diff-label">新增段落</span><span class="diff-line-add">' + esc(np) + '</span></div>';
+            bodyHtml = '<span class="diff-label">新增段落</span><span class="diff-line-add">' + esc(np) + '</span>';
         } else if (op && !np) {
-            // 删除段落
-            html += '<div class="diff-para changed"><span class="diff-label">删除段落</span><span class="diff-line-del">' + esc(op) + '</span></div>';
+            bodyHtml = '<span class="diff-label">删除段落</span><span class="diff-line-del">' + esc(op) + '</span>';
         } else {
-            // 修改段落 — 逐字符 diff
-            html += '<div class="diff-para changed"><span class="diff-label">段落 ' + (i + 1) + ' 已修改</span>';
-            html += peCharDiff(op, np);
-            html += '</div>';
+            bodyHtml = peCharDiff(op, np);
         }
+        optHtml += '<div class="' + cls + '" data-pi="' + i + '" onclick="peNavTo(' + i + ')">';
+        optHtml += '<div class="pe-para-body">' + bodyHtml + '</div>';
+        if (changed && annotMap[i]) {
+            optHtml += peAnnotHtml(annotMap[i]);
+        }
+        optHtml += '</div>';
     }
-    document.getElementById('pe-col-opt').innerHTML = html;
+    document.getElementById('pe-col-orig').innerHTML = origHtml;
+    document.getElementById('pe-col-opt').innerHTML = optHtml;
+}
+
+// 内联批注节点（独立 DOM，复制/保存读 state 不受影响）
+function peAnnotHtml(ch) {
+    var typeLabel = {ai_taste:'AI味',writing:'文笔',consistency:'一致性',style:'风格',logic:'逻辑'}[ch.type] || ch.type || '修改';
+    var html = '<div class="pe-annot" contenteditable="false">';
+    html += '<span class="pe-annot-tag">✏️ ' + esc(typeLabel) + '</span>';
+    if (ch.evidence_source) html += '<span class="pe-annot-src">📌 ' + esc(ch.evidence_source) + '</span>';
+    if (ch.reason) html += '<div class="pe-annot-reason">' + esc(ch.reason) + '</div>';
+    html += '</div>';
+    return html;
+}
+
+// 点击段落 → 两栏同时高亮 + 另一栏滚动到对应段
+function peNavTo(pi) {
+    var both = document.querySelectorAll('#pe-col-orig .pe-para, #pe-col-opt .pe-para');
+    both.forEach(function(el) { el.classList.remove('pe-para-active'); });
+    var targets = document.querySelectorAll('.pe-para[data-pi="' + pi + '"]');
+    targets.forEach(function(el) {
+        el.classList.add('pe-para-active');
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
 }
 
 // 逐字符 diff 算法
@@ -391,6 +450,9 @@ function peRenderExplanation(exp) {
     var panel = document.getElementById('pe-explain');
     var body = document.getElementById('pe-explain-body');
     panel.classList.add('show');
+    panel.classList.remove('collapsed');  // 新结果默认展开
+    var tbtn = panel.querySelector('.pe-explain-header .btn');
+    if (tbtn) tbtn.textContent = '收起';
 
     var html = '';
 
@@ -431,9 +493,10 @@ function peRenderExplanation(exp) {
             var typeLabel = {ai_taste:'AI味',writing:'文笔',consistency:'一致性',style:'风格',logic:'逻辑'}[ch.type] || ch.type || '';
             html += '<div class="pe-change-card">';
             if (typeLabel) html += '<span class="change-type">' + typeLabel + '</span>';
+            if (ch.evidence_source) html += '<span class="change-type" style="background:rgba(124,92,252,0.12);color:var(--accent);margin-left:4px">📌 ' + esc(ch.evidence_source) + '</span>';
             html += '<div style="margin-top:6px"><span style="color:var(--bad);text-decoration:line-through">' + esc(ch.original_snippet || '') + '</span></div>';
             html += '<div style="margin-top:2px"><span style="color:var(--ok)">' + esc(ch.optimized_snippet || '') + '</span></div>';
-            if (ch.reason) html += '<div style="margin-top:6px;color:var(--text-muted);font-size:11px">💡 ' + esc(ch.reason) + '</div>';
+            if (ch.reason) html += '<div style="margin-top:6px;color:var(--text-muted);font-size:11px">💡 依据: ' + esc(ch.reason) + '</div>';
             html += '</div>';
         });
         html += '</div>';
@@ -452,11 +515,18 @@ function peRenderExplanation(exp) {
     body.innerHTML = html || '<p class="muted">暂无解释信息</p>';
 }
 
-// ===== 保存/复制 =====
+// 收起/展开：只折叠 body，保留 header（修复点击后整个面板消失）
+function peToggleExplain(btn) {
+    var panel = document.getElementById('pe-explain');
+    panel.classList.toggle('collapsed');
+    if (btn) btn.textContent = panel.classList.contains('collapsed') ? '展开' : '收起';
+}
+
+// ===== 保存/复制/应用 =====
 async function peSaveResult() {
     var pid = peState.projectId;
     var chNum = peState.chapterNum;
-    var content = peState.currentContent;
+    var content = peState.currentContent;  // 纯优化正文，不含批注
     if (!pid || !chNum) { toast('请先选择项目和章节', 'error'); return; }
     if (!content) { toast('没有可保存的内容', 'error'); return; }
     try {
@@ -471,12 +541,203 @@ async function peSaveResult() {
     } catch(e) { toast('保存失败: ' + e.message, 'error'); }
 }
 
+// 应用：单章模式应用当前章；批量/整个项目模式应用全部已优化章节。均为纯正文，不含批注。
+async function peApplyResult() {
+    var pid = peState.projectId || document.getElementById('pe-project').value;
+    if (!pid) { toast('请先选择项目', 'error'); return; }
+    var range = document.getElementById('pe-range').value;
+
+    if (range === 'single') {
+        // 单章：直接把当前优化正文写回章节
+        if (!peState.chapterNum || !peState.currentContent) { toast('没有可应用的内容', 'error'); return; }
+        if (!confirm('确定把优化版应用到第' + peState.chapterNum + '章？原内容会自动快照备份。')) return;
+        try {
+            var resp = await fetch('/api/v1/projects/' + pid + '/pipeline/save', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ chapter_num: peState.chapterNum, volume_number: peState.volumeNum || 1, content: peState.currentContent })
+            });
+            if (!resp.ok) { var e = await resp.json(); throw new Error(e.detail || '应用失败'); }
+            toast('已应用到第' + peState.chapterNum + '章', 'success');
+        } catch(e) { toast('应用失败: ' + e.message, 'error'); }
+        return;
+    }
+
+    // 批量 / 整个项目：应用所有已保存的优化结果到对应章节
+    if (!confirm('确定把所有已优化章节应用到项目？每章原内容会自动快照备份。')) return;
+    try {
+        var resp = await fetch('/api/v1/projects/' + pid + '/pipeline/apply-all', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})
+        });
+        if (!resp.ok) { var e = await resp.json(); throw new Error(e.detail || '应用失败'); }
+        var data = await resp.json();
+        if (data.status === 'noop') { toast(data.message || '没有可应用的优化结果', 'info'); }
+        else { toast('已应用 ' + data.applied + ' 章' + (data.skipped ? '，跳过 ' + data.skipped + ' 章' : ''), 'success'); }
+    } catch(e) { toast('应用失败: ' + e.message, 'error'); }
+}
+
 function peCopyResult() {
     if (!peState.currentContent) { toast('没有可复制的内容', 'error'); return; }
-    navigator.clipboard.writeText(peState.currentContent).then(function() {
+    navigator.clipboard.writeText(peState.currentContent).then(function() {  // 纯正文，无批注
         toast('已复制到剪贴板', 'success');
     }).catch(function() { toast('复制失败', 'error'); });
 }
 
 // ===== 工具函数 =====
 function esc(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+// ===== 朱雀终检 =====
+
+function peToggleZhuque(btn) {
+    var panel = document.getElementById('pe-zhuque');
+    panel.classList.toggle('collapsed');
+}
+
+// 导出文本供朱雀检测：单章用当前内容；整个项目模式从服务器拉合并文本
+async function peZhuqueExport() {
+    var pid = peState.projectId || document.getElementById('pe-project').value;
+    var range = document.getElementById('pe-range').value;
+    var text = '', filename = '';
+
+    if (range === 'all' && pid) {
+        try {
+            var resp = await fetch('/api/v1/projects/' + pid + '/pipeline/export-text');
+            if (!resp.ok) throw new Error('获取失败');
+            var data = await resp.json();
+            text = data.text || '';
+            filename = 'project_optimized_' + pid.slice(0, 8) + '.txt';
+            if (!text) { toast('暂无已优化章节可导出', 'info'); return; }
+        } catch(e) { toast('导出失败: ' + e.message, 'error'); return; }
+    } else {
+        text = peState.currentContent;
+        if (!text) { toast('请先优化一章', 'error'); return; }
+        filename = 'ch' + (peState.chapterNum || '0') + '_optimized.txt';
+    }
+
+    var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('已导出 ' + filename, 'success');
+}
+
+// 回填朱雀AI率并触发针对性降重
+async function peZhuqueReduce() {
+    var pid = peState.projectId || document.getElementById('pe-project').value;
+    var rateStr = document.getElementById('pe-zq-rate').value.trim();
+    if (!rateStr) { toast('请先填入朱雀检测到的 AI 率', 'error'); return; }
+    var rate = parseFloat(rateStr);
+    if (isNaN(rate) || rate < 0 || rate > 100) { toast('AI 率应为 0-100 之间的数字', 'error'); return; }
+    if (!peState.currentContent) { toast('请先优化一章', 'error'); return; }
+    if (!pid) { toast('请先选择项目', 'error'); return; }
+
+    var btn = document.querySelector('#pe-zhuque .btn-primary');
+    if (btn) { btn.disabled = true; btn.textContent = '降重中...'; }
+
+    try {
+        var resp = await fetch('/api/v1/projects/' + pid + '/pipeline/zhuque-reduce', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                content: peState.currentContent,
+                zhuque_ai_rate: rate,
+                chapter_num: peState.chapterNum || 0,
+                volume_number: peState.volumeNum || 1,
+            }),
+        });
+        if (!resp.ok) { var e = await resp.json(); throw new Error(e.detail || '请求失败'); }
+        var data = await resp.json();
+
+        var box = document.getElementById('pe-zq-result');
+        box.style.display = 'block';
+        var icon = data.changed ? '🔄' : '✅';
+        var local_pct = Math.round((1 - data.local_human) * 100);
+        var zq_pct = Math.round((1 - data.zhuque_human) * 100);
+        var eff_pct = Math.round((1 - data.effective_human) * 100);
+        box.innerHTML = icon + ' ' + esc(data.summary)
+            + '<br><span style="color:var(--text-muted)">本地AI率 ' + local_pct + '% · 朱雀AI率 ' + zq_pct + '% · 有效判据 ' + eff_pct + '%</span>';
+
+        if (data.changed && data.reduced_text) {
+            peState.currentContent = data.reduced_text;
+            // 用降重后的文本重新渲染对比区（以当前对比文本为原文，降重后为优化版）
+            var annotMap = {};
+            if (peState.stepsResult && peState.stepsResult.explanation && peState.stepsResult.explanation.changes) {
+                peState.stepsResult.explanation.changes.forEach(function(ch) {
+                    if (ch.paragraph_index !== null && ch.paragraph_index !== undefined) annotMap[ch.paragraph_index] = ch;
+                });
+            }
+            peRenderAlignedColumns(document.getElementById('pe-col-orig').innerText, data.reduced_text, annotMap);
+            document.getElementById('pe-opt-count').textContent = data.reduced_text.length + ' 字';
+            toast('降重完成，可再次导出去朱雀验证', 'success');
+        } else {
+            toast(data.summary, 'info');
+        }
+    } catch(e) {
+        toast('降重失败: ' + e.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '应用降重'; }
+    }
+}
+
+// 导入朱雀报告PDF：纯正则解析（后端不调LLM），自动按解析的AI率降重
+async function peZhuqueImport(input) {
+    var file = input.files && input.files[0];
+    input.value = '';  // 允许重复选同一文件
+    if (!file) return;
+    var pid = peState.projectId || document.getElementById('pe-project').value;
+    if (!pid) { toast('请先选择项目', 'error'); return; }
+    if (!peState.chapterNum) { toast('请先选择/优化一章', 'error'); return; }
+
+    var box = document.getElementById('pe-zq-result');
+    box.style.display = 'block';
+    box.innerHTML = '⏳ 正在解析报告并降重...';
+
+    var fd = new FormData();
+    fd.append('file', file);
+    var qs = '?chapter_num=' + peState.chapterNum + '&volume_number=' + (peState.volumeNum || 1);
+
+    try {
+        var resp = await fetch('/api/v1/projects/' + pid + '/pipeline/import-zhuque-report' + qs, {
+            method: 'POST', body: fd,
+        });
+        if (!resp.ok) { var e = await resp.json(); throw new Error(e.detail || '解析失败'); }
+        var data = await resp.json();
+        var rep = data.report || {};
+
+        var html = '📄 ' + esc(data.summary || '解析完成');
+        html += '<br><span style="color:var(--text-muted)">整体AI率 ' + Math.round((rep.overall_ai_rate || 0) * 100)
+              + '% · 共' + (rep.segment_count || 0) + '个片段，其中' + (rep.ai_segment_count || 0) + '个疑似AI</span>';
+        // 列出高AIGC片段
+        if (rep.segments && rep.segments.length) {
+            html += '<div style="margin-top:6px;max-height:120px;overflow:auto">';
+            rep.segments.forEach(function(s) {
+                if (!s.is_ai) return;
+                var snippet = (s.text || '').slice(0, 40);
+                html += '<div style="font-size:11px;color:var(--text-muted)">• 片段' + s.index + ' AIGC '
+                      + Math.round(s.aigc * 100) + '%：' + esc(snippet) + (s.text && s.text.length > 40 ? '…' : '') + '</div>';
+            });
+            html += '</div>';
+        }
+        box.innerHTML = html;
+
+        // 自动降重已执行 → 刷新对比区
+        if (data.reduction && data.reduction.changed && data.reduction.reduced_text) {
+            peState.currentContent = data.reduction.reduced_text;
+            var annotMap = {};
+            if (peState.stepsResult && peState.stepsResult.explanation && peState.stepsResult.explanation.changes) {
+                peState.stepsResult.explanation.changes.forEach(function(ch) {
+                    if (ch.paragraph_index !== null && ch.paragraph_index !== undefined) annotMap[ch.paragraph_index] = ch;
+                });
+            }
+            peRenderAlignedColumns(document.getElementById('pe-col-orig').innerText, data.reduction.reduced_text, annotMap);
+            document.getElementById('pe-opt-count').textContent = data.reduction.reduced_text.length + ' 字';
+            toast('报告已解析，降重完成', 'success');
+        } else {
+            toast('报告已解析', 'success');
+        }
+    } catch(e) {
+        box.innerHTML = '❌ ' + esc(e.message);
+        toast('导入失败: ' + e.message, 'error');
+    }
+}

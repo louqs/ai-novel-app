@@ -1,15 +1,22 @@
-"""统一编辑优化流水线插件 — AI编辑批注 + 质量分析优化 + AI检测降重.
+"""证据驱动的编辑优化流水线插件.
 
-三步流水线：
-1. AI编辑批注 — 分析段落问题，给出修改建议，生成优化版本
-2. 质量分析优化 — 统一分析器(写作教练+十维评审+AI检测) + LLM优化
-3. AI检测降重 — 复用步骤2的AI检测结果，如超标则降重处理
+设计原则：先收证据 → 一次定点改 → 重测，报告里每个分数、每处修改都可追溯到来源。
 
-每一步都产出 A/B 对比数据，前端可逐段采纳/拒绝。
+三阶段：
+1. 收集证据 — 规则预检 + 门禁 + 贡献者 + 统一质量分析器，按段落归并出
+   「哪一段有什么问题、出处是谁、命中了哪些具体词」。不额外调 LLM。
+2. 定点改写 — 只把「有证据的段落」连同证据清单喂给 LLM，逐段返回修改，
+   带长度漂移护栏；无证据段落不送不改。一次 LLM 调用。
+3. 重测降重 — 对改写结果重测（有改动才重测），拿到真实的优化后分数；
+   AI 率仍超标才触发定点降重。
+
+报告（explanation）全部用实测值构建：分数取分析器实算的 overall_score，
+问题取真实检测命中，改进取 before/after 的 issue 差集——不再让 LLM 现编分数。
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from typing import Any
@@ -20,188 +27,59 @@ from core.plugin_manager import PluginManifest
 logger = get_logger(__name__)
 
 # ============================================================================
-# 系统提示词
+# 系统提示词 — 仅保留「定点改写」一个
 # ============================================================================
 
-ANNOTATE_SYSTEM = """你是一位资深网文编辑，拥有15年编辑经验。你的任务是逐段审阅小说文本，找出问题并给出修改建议。
+REWRITE_SYSTEM = """你是一位资深网文编辑。下面给你若干「有问题的段落」及每段的具体证据\
+（来自规则检测、内容门禁、AI检测器的真实命中）。你的任务是只修改这些段落，逐段消除证据指出的问题。
 
-## 审维度（按优先级排序）
+## 铁律
+- 只改给你的段落，逐段返回；不要新增段落、不要合并段落、不要触碰没给你的内容。
+- 每段修改后字数与原段相近（±20% 以内），禁止大幅扩写或缩写。
+- 保持原有剧情、人物关系、关键信息不变，不引入新的 AI 味：不堆排比、不加情感标签\
+（"心中涌起""不禁感到"），不用"在…中""随着…""当…时"这类模板开头。
+- 逐条消除每段的证据，并在 applied_fixes 里回填你实际处理了哪些证据 code。
 
-### 1. 一致性问题（最高优先级）
-- **角色状态**: 人物外貌、能力、伤势、情绪是否与前文一致
-- **关系准确性**: 人物之间的关系、称谓、互动模式是否正确
-- **物品/道具**: 物品的出现、消失、位置是否合理
-- **时间线**: 时间流逝、事件顺序是否矛盾
-- **地点状态**: 场景描述、位置关系是否一致
-- **规则应用**: 世界观规则（异能、系统等）是否一致应用
-- **剧情状态**: 已发生事件的引用是否准确
+## 输出格式（严格 JSON，不要用代码块包裹）
+{"revisions":[{"paragraph_index":0,"revised_text":"修改后的该段完整文本","applied_fixes":["证据code"]}]}
 
-### 2. 毒点检测
-- **逻辑硬伤**: 不合常理的情节设计
-- **圣母/降智**: 角色做出不符合人设的愚蠢决定
-- **无脑反派**: 反派智商下线、行为缺乏动机
-- **注水段落**: 无意义的凑字数内容
-- **节奏断裂**: 突兀的场景切换或情节跳跃
+没问题或无需改动的段落，不要出现在 revisions 里。"""
 
-### 3. 文笔质量
-- **AI味痕迹**: 模板化表达、排比堆砌、情感标签化
-- **对话质量**: 对话是否自然、是否有信息量
-- **描写质量**: 是否空洞、是否有感官细节
+# 十维维度中文名（报告与提示词共用）
+DIM_NAMES = {
+    "hook_strength": "开篇吸引力", "character_depth": "人物塑造",
+    "pacing": "节奏控制", "emotional_resonance": "情感共鸣",
+    "world_coherence": "世界观", "style_uniqueness": "风格独特性",
+    "payoff_density": "爽点密度", "suspense": "悬念感",
+    "chapter_hook": "章尾钩子", "theme_depth": "主题深度",
+}
 
-## 输出格式
-
-返回JSON数组，每个元素代表一个段落的批注：
-```json
-[
-  {
-    "paragraph_index": 0,
-    "has_issues": true,
-    "issues": [
-      {
-        "type": "consistency|poison|ai_taste|writing",
-        "severity": "high|medium|low",
-        "description": "问题描述",
-        "suggestion": "具体修改建议"
-      }
-    ],
-    "revised_text": "修改后的段落文本（如有问题）"
-  }
+# 证据 code 前缀 → 前端修改卡片 type
+_CODE_TYPE_MAP = [
+    ("anti_ai", "ai_taste"),
+    ("consistency", "consistency"),
+    ("foreshadow", "consistency"),
+    ("poison", "logic"),
+    ("logic", "logic"),
+    ("ai_taste", "ai_taste"),
+    ("style", "style"),
 ]
-```
 
-如果某段落没有问题，设置 `has_issues: false`，不需要 `revised_text`。
 
-注意：
-- 保持原文风格和语气，不要过度文学化
-- 修改要自然，不要引入新的AI味
-- 只修改有问题的部分，不要大幅改动无问题的段落
-- `revised_text` 必须与原文长度相近（±20%），不要大幅扩写或缩写
-"""
-
-COACH_OPTIMIZE_SYSTEM = """你是一位资深网文写作教练+编辑。你需要综合以下信息来优化文本：
-
-1. **统一质量分析报告**: 包含写作教练评分、十维评审(开篇/人物/节奏/情感/世界观/风格/爽点/悬念/章尾/主题)、AI检测结果
-2. **编辑批注**: 前一步编辑发现的具体问题和修改建议
-
-你的优化目标：
-- 解决编辑批注中指出的所有问题
-- 根据写作教练建议提升文本质量
-- 针对十维评审中得分较低的维度重点优化
-- 降低AI检测痕迹
-- 保持原有剧情走向和人物设定不变
-
-## 输出格式
-
-```json
-{
-  "optimized_text": "优化后的完整文本",
-  "changes": [
-    {
-      "paragraph_index": 0,
-      "reason": "修改原因",
-      "before": "原文片段",
-      "after": "修改后片段"
-    }
-  ],
-  "summary": "本次优化总结（解决了哪些问题、提升了哪些方面）"
-}
-```
-
-注意：
-- 逐段优化，每段修改都要说明原因
-- 解决编辑批注中的问题是第一优先级
-- 不要改变情节走向和人物性格
-- 优化后字数应与原文相近（±15%）
-"""
-
-DETECT_REDUCE_SYSTEM = """你是一位反AI检测专家。你需要对文本进行降重处理，使其通过AI检测。
-
-## 降重策略
-
-### 第一轴：口语化改造
-- 把书面语替换为口语表达
-- 添加语气词（"嘛"、"吧"、"呢"）
-- 使用不完整的句子结构
-
-### 第二轴：感官细节增强
-- 添加视觉、听觉、嗅觉、触觉、味觉描写
-- 用具体细节替代抽象描述
-- 加入环境细微感知
-
-### 第三轴：节奏破坏
-- 长短句交替，打破均匀节奏
-- 插入碎碎念、心理旁白
-- 使用省略号、破折号改变节奏
-
-### 第四轴：私人词库注入
-- 替换AI高频词为个性化表达
-- 使用角色特有的口头禅
-- 加入方言或行业术语
-
-## 输出格式
-
-```json
-{
-  "reduced_text": "降重后的完整文本",
-  "changes": [
-    {
-      "paragraph_index": 0,
-      "strategy": "使用了哪种降重策略",
-      "before": "原文片段",
-      "after": "修改后片段"
-    }
-  ],
-  "ai_score_before": 0.65,
-  "ai_score_after": 0.25,
-  "summary": "降重总结"
-}
-```
-
-注意：
-- 降重不是重写，要保持原文情节和信息
-- 每段最多修改30%的内容
-- 优先处理AI味最重的段落
-- 降重后字数应与原文相近（±10%）
-"""
-
-EXPLAIN_SYSTEM = """你是一位资深网文编辑，正在向作者解释你的修改理由。
-
-## 任务
-对比原文和优化版，生成一份清晰的修改解释报告。
-
-## 输出格式（严格JSON）
-```json
-{
-  "summary": "用2-3句话概括本次优化做了什么、效果如何",
-  "quality_before": {"score": 65, "grade": "C", "issues": ["问题1", "问题2"]},
-  "quality_after": {"score": 85, "grade": "A", "improvements": ["改进1", "改进2"]},
-  "changes": [
-    {
-      "original_snippet": "原文片段（20-50字）",
-      "optimized_snippet": "优化后片段（20-50字）",
-      "reason": "为什么这样改",
-      "type": "ai_taste|writing|consistency|style|logic"
-    }
-  ],
-  "comparison": "两个版本的整体对比分析（100-200字）",
-  "recommendation": "建议采用哪个版本，为什么"
-}
-```
-
-## 要求
-- score 为 0-100 的整数，grade 为 S/A/B/C/D 之一
-- changes 列出所有有意义的修改（最多10条），每条要具体说明改了什么、为什么改
-- comparison 要客观分析两个版本的优劣
-- recommendation 要给出明确建议
-- 用中文回答，语言要专业但易懂
-"""
+def _code_to_type(code: str) -> str:
+    """证据 code → 前端类型标签."""
+    low = (code or "").lower()
+    for prefix, t in _CODE_TYPE_MAP:
+        if low.startswith(prefix) or prefix in low:
+            return t
+    return "writing"
 
 
 def create_manifest() -> PluginManifest:
     return PluginManifest(
         name="pipeline-editor",
-        version="0.1.0",
-        description="统一编辑优化流水线 — AI编辑批注 + 写作教练 + AI检测降重",
+        version="0.2.0",
+        description="证据驱动编辑优化流水线 — 收证据 → 定点改写 → 重测",
         dependencies=[],
         hooks=["on_load", "on_unload"],
     )
@@ -212,7 +90,7 @@ def create_plugin() -> PipelineEditorPlugin:
 
 
 class PipelineEditorPlugin:
-    """统一编辑优化流水线插件."""
+    """证据驱动的编辑优化流水线插件."""
 
     def __init__(self) -> None:
         self._kernel: Any = None
@@ -225,10 +103,14 @@ class PipelineEditorPlugin:
         self._analyzer = UnifiedQualityAnalyzer(kernel)
         from core.text_transformer import TextTransformer
         self._transformer = TextTransformer(kernel)
-        logger.info("统一编辑优化流水线插件已加载")
+        logger.info("证据驱动编辑优化流水线插件已加载")
 
     async def on_unload(self) -> None:
         self._kernel = None
+
+    # ==================================================================
+    # 主流程
+    # ==================================================================
 
     async def run_pipeline(
         self,
@@ -239,35 +121,309 @@ class PipelineEditorPlugin:
         steps: list[str] | None = None,
         *,
         volume_number: int = 1,
-        ai_threshold: float = 0.3,
+        ai_threshold: float = 0.2,
         humanize_mode: str = "unified",
         gate_issues: list[dict] | None = None,
     ) -> dict:
-        """执行优化流水线.
+        """执行证据驱动优化流水线.
 
-        Args:
-            content: 原始文本
-            project_id: 项目ID（可选，用于获取上下文）
-            chapter_num: 章节号
-            platform: 平台
-            steps: 要执行的步骤，默认全部执行
-            volume_number: 卷号
-            ai_threshold: AI率阈值，超过则降重
-            humanize_mode: 降重模式（默认unified统一模式）
+        返回契约（保持与旧版一致，调用方零改动）：
+            {original, current_content, steps:[...], explanation:{...}}
 
-        Returns:
-            流水线执行结果，包含每步的A/B对比数据
+        steps 语义（向后兼容旧的 annotate/coach/detect 命名）：
+            - 含 "annotate" 或 "coach" → 执行定点改写
+            - 含 "detect" → 执行重测 + 条件降重
+            证据收集始终执行。
         """
         if steps is None:
             steps = ["annotate", "coach", "detect"]
+        do_rewrite = ("annotate" in steps) or ("coach" in steps)
+        do_detect = "detect" in steps
 
-        result = {
+        result: dict[str, Any] = {
             "original": content,
             "current_content": content,
             "steps": [],
         }
 
-        # 获取项目上下文（如有）
+        # ---- 阶段 1：收集证据（含门禁 / 贡献者 / 分析器实测基线）----
+        evidence = await self._collect_evidence(
+            content, project_id, chapter_num, platform,
+            volume_number=volume_number, gate_issues=gate_issues,
+        )
+        result["steps"].append(evidence["step_record"])
+
+        # ---- 阶段 2：定点改写 ----
+        if do_rewrite and evidence["para_evidence"]:
+            rewrite_step = await self._rewrite_paragraphs(content, platform, evidence)
+            result["steps"].append(rewrite_step)
+            result["current_content"] = rewrite_step.get("optimized", content)
+            evidence["_rewrite_changes"] = rewrite_step.get("changes", [])
+        elif do_rewrite:
+            result["steps"].append({
+                "step": "coach", "name": "定点改写",
+                "original": content, "optimized": content,
+                "changes": [], "diff_items": [],
+                "summary": "未发现需要修改的段落，正文保持原样",
+            })
+
+        # ---- 阶段 3：重测 + 条件降重 ----
+        after_report: dict[str, Any] = {}
+        if result["current_content"] != content:
+            # 内容有改动才值得重测
+            after_report = await self._safe_analyze(result["current_content"], platform, evidence["genre_tags"])
+        else:
+            after_report = evidence["baseline_report"]
+
+        if do_detect:
+            detect_step = await self._detect_reduce(
+                result["current_content"], platform,
+                ai_threshold=ai_threshold, humanize_mode=humanize_mode,
+                prev_ai_detection=after_report.get("ai_detection"),
+            )
+            result["steps"].append(detect_step)
+            if detect_step.get("optimized") and detect_step["optimized"] != result["current_content"]:
+                result["current_content"] = detect_step["optimized"]
+                # 降重改了内容 → 再测一次拿真实终值
+                after_report = await self._safe_analyze(result["current_content"], platform, evidence["genre_tags"])
+
+        # ---- 用实测值构建报告（不再让 LLM 编分数）----
+        result["explanation"] = self._build_grounded_report(
+            evidence, after_report, result["original"], result["current_content"]
+        )
+        return result
+
+    async def _safe_analyze(self, content: str, platform: str, genre_tags: list[str]) -> dict:
+        """调用统一分析器，失败返回空 dict（不阻断流水线）."""
+        try:
+            report = await self._analyzer.analyze_text(content, platform=platform, genre_tags=genre_tags)
+            return report.to_dict()
+        except Exception as e:
+            logger.warning("统一质量分析失败", error=str(e))
+            return {}
+
+
+    # ==================================================================
+    # 阶段 1：收集证据
+    # ==================================================================
+
+    async def _collect_evidence(
+        self, content: str, project_id: str, chapter_num: int, platform: str,
+        *, volume_number: int = 1, gate_issues: list[dict] | None = None,
+    ) -> dict:
+        """收集所有可追溯证据，按段落归并.
+
+        Returns dict:
+            paragraphs: list[str]                 — 原文段落
+            para_evidence: dict[int, list[dict]]  — 段落级证据 {idx: [{code,source,message,suggestion}]}
+            chapter_evidence: list[dict]          — 章节级证据（门禁/贡献者，无段落坐标）
+            baseline_report: dict                 — 分析器实测基线（overall_score/dimension/ai_detection）
+            genre_tags: list[str]
+            context_info: str                     — 喂给改写模型的项目/体裁上下文
+            step_record: dict                     — 写入 result["steps"] 的记录
+        """
+        paragraphs = content.split("\n\n")
+        para_evidence: dict[int, list[dict]] = {}
+        chapter_evidence: list[dict] = []
+
+        def add_para(idx: int, ev: dict) -> None:
+            para_evidence.setdefault(idx, []).append(ev)
+
+        # ---- 1a. 规则预检（自带 paragraph_index）----
+        for issue in self._rule_based_check(content):
+            add_para(issue.get("paragraph_index", 0), {
+                "code": f"{issue.get('type', 'rule')}.{issue.get('severity', 'low')}",
+                "source": "规则检测",
+                "message": issue.get("description", ""),
+                "suggestion": issue.get("suggestion", ""),
+            })
+
+        # ---- 1b. 项目 / 体裁上下文 + 规则基线 ----
+        context_info, genre_tags = await self._build_context_info(project_id)
+
+        # ---- 1c. 门禁链（含 skill builder 的 IQualityGate 插件）----
+        if self._kernel:
+            if not gate_issues and project_id and self._kernel.db:
+                with contextlib.suppress(Exception):
+                    gate_issues = await self._kernel.db.get_gate_results(project_id, chapter_num, volume_number)
+            if not gate_issues:
+                gate_issues = await self._run_gate_chain(content, project_id)
+        for g in (gate_issues or []):
+            gate_name = g.get("gate", "门禁")
+            for i in g.get("issues", []):
+                ev = {
+                    "code": i.get("code", f"gate.{gate_name}"),
+                    "source": f"门禁:{gate_name}",
+                    "message": i.get("message", ""),
+                    "suggestion": i.get("suggestion", ""),
+                }
+                # 门禁无段落坐标 → 尝试用 message 里的引文定位，否则归章节级
+                idx = self._locate_evidence(paragraphs, i.get("message", ""))
+                if idx is not None:
+                    add_para(idx, ev)
+                else:
+                    chapter_evidence.append(ev)
+
+        # ---- 1d. 贡献者（含 skill builder 的 IPipelineContributor 插件）----
+        contributor_results: list[dict] = []
+        if self._kernel:
+            if project_id and self._kernel.db:
+                with contextlib.suppress(Exception):
+                    contributor_results = await self._kernel.db.get_contributor_results(
+                        project_id, chapter_num, volume_number)
+            if not contributor_results:
+                contributor_results = await self._run_contributors(content, project_id, chapter_num, platform)
+        for cr in (contributor_results or []):
+            name = cr.get("name", "贡献者")
+            if cr.get("summary"):
+                chapter_evidence.append({
+                    "code": f"contributor.{name}", "source": f"分析:{name}",
+                    "message": cr["summary"], "suggestion": "",
+                })
+            for s in (cr.get("suggestions") or []):
+                chapter_evidence.append({
+                    "code": f"contributor.{name}", "source": f"分析:{name}",
+                    "message": str(s), "suggestion": str(s),
+                })
+
+        # ---- 1e. 统一质量分析器：实测基线 + AI 命中具体词 ----
+        baseline_report = await self._safe_analyze(content, platform, genre_tags)
+        for iss in baseline_report.get("issues", []):
+            ev = {
+                "code": iss.get("code", "quality"),
+                "source": {"anti_ai": "AI检测器", "quality_evaluator": "十维评审"}.get(
+                    iss.get("source", ""), iss.get("source", "质量分析")),
+                "message": iss.get("message", ""),
+                "suggestion": iss.get("suggestion", ""),
+            }
+            # AI 检测命中常带具体词 → 用 suggestion 里的词定位段落
+            idx = self._locate_evidence(paragraphs, iss.get("suggestion", "")) \
+                or self._locate_evidence(paragraphs, iss.get("message", ""))
+            if idx is not None:
+                add_para(idx, ev)
+            else:
+                chapter_evidence.append(ev)
+
+        # ---- 1f. 深度精修兜底 ----
+        # 没有任何段落级证据，但十维有低分项或教练有建议 → 不能放过，挑最相关的段挂证据
+        deep_polish = False
+        if not para_evidence:
+            deep_ev = self._deep_polish_evidence(paragraphs, baseline_report)
+            for idx, ev in deep_ev:
+                add_para(idx, ev)
+            deep_polish = bool(deep_ev)
+
+        # ---- 组装 step 记录 ----
+        total_para_issues = sum(len(v) for v in para_evidence.values())
+        summary = (f"定位到 {len(para_evidence)} 段共 {total_para_issues} 处问题"
+                   f"，章节级 {len(chapter_evidence)} 条")
+        if deep_polish:
+            summary += "（深度精修：依十维低分项挑段精修）"
+        step_record = {
+            "step": "annotate",
+            "name": "证据收集",
+            "original": content,
+            "optimized": content,
+            "para_evidence": {str(k): v for k, v in para_evidence.items()},
+            "chapter_evidence": chapter_evidence,
+            "baseline_report": baseline_report,
+            "summary": summary,
+        }
+
+        return {
+            "paragraphs": paragraphs,
+            "para_evidence": para_evidence,
+            "chapter_evidence": chapter_evidence,
+            "baseline_report": baseline_report,
+            "genre_tags": genre_tags,
+            "context_info": context_info,
+            "step_record": step_record,
+        }
+
+    @staticmethod
+    def _locate_evidence(paragraphs: list[str], hint: str) -> int | None:
+        """用证据里的引文/命中词在段落中定位 paragraph_index.
+
+        从 hint 中抽取被引号/书名号包裹的词，或冒号后的片段，逐段 substring 查找。
+        找不到返回 None（→ 归为章节级证据）。
+        """
+        if not hint:
+            return None
+        # 抽取候选定位词：引号内、书名号内、或冒号之后的片段
+        cands: list[str] = []
+        _open = "「『“‘’"   # 「 『 " ' '
+        _close = "」』”‘’"  # 」 』 " ' '
+        quote_re = re.compile(rf'[{_open}]([^{_close}]{{2,30}})[{_close}]')
+        for m in quote_re.findall(hint):
+            cands.append(m)
+        for seg in re.split(r'[:：,，、]', hint):
+            seg = seg.strip()
+            if 2 <= len(seg) <= 30 and not re.search(r'[（）()]', seg):
+                cands.append(seg)
+        for cand in cands:
+            for idx, para in enumerate(paragraphs):
+                if cand and cand in para:
+                    return idx
+        return None
+
+    @staticmethod
+    def _deep_polish_evidence(paragraphs: list[str], baseline_report: dict) -> list[tuple[int, dict]]:
+        """深度精修兜底：无段落级证据但章节质量偏弱时，按十维低分项挑段挂证据.
+
+        维度 → 候选段落的映射（依网文常识）：
+            开篇吸引力 → 首段；章尾钩子 → 末段；
+            节奏/爽点/悬念 → 最长的几段（最易拖沓）；
+            其余低分维度 → 落到最长段，作为整体精修锚点。
+        返回 [(paragraph_index, evidence_dict), ...]，最多 3 段，避免无依据地全篇重写。
+        """
+        idxs = [i for i, p in enumerate(paragraphs) if p.strip()]
+        if not idxs:
+            return []
+        first_idx = idxs[0]
+        last_idx = idxs[-1]
+        # 按长度排序取最长段
+        longest = sorted(idxs, key=lambda i: len(paragraphs[i]), reverse=True)
+
+        dims = baseline_report.get("dimension_scores", {})
+        low_dims = {k: v for k, v in dims.items() if isinstance(v, (int, float)) and v < 6}
+
+        dim_target = {
+            "hook_strength": first_idx, "chapter_hook": last_idx,
+            "pacing": longest[0], "payoff_density": longest[0], "suspense": longest[0],
+        }
+
+        out: list[tuple[int, dict]] = []
+        used: set[int] = set()
+        for key, val in sorted(low_dims.items(), key=lambda kv: kv[1]):
+            name = DIM_NAMES.get(key, key)
+            idx = dim_target.get(key, longest[0])
+            if idx in used:
+                continue
+            used.add(idx)
+            out.append((idx, {
+                "code": f"dimension.{key}",
+                "source": f"十维评审:{name}",
+                "message": f"{name}得分偏低（{val}/10），此段是该维度的薄弱锚点",
+                "suggestion": f"针对「{name}」做精修：强化该段的{name}表现",
+            }))
+            if len(out) >= 3:
+                break
+
+        # 十维全过线，但教练有可执行建议 → 挂到最长段做一次精修
+        if not out:
+            wq = baseline_report.get("writing_quality", {})
+            for sug in (wq.get("suggestions") or [])[:1]:
+                if isinstance(sug, dict) and (sug.get("issue") or sug.get("fix")):
+                    out.append((longest[0], {
+                        "code": "coach.suggestion",
+                        "source": "写作教练",
+                        "message": sug.get("issue", "") or "可进一步打磨",
+                        "suggestion": sug.get("fix", ""),
+                    }))
+        return out
+
+    async def _build_context_info(self, project_id: str) -> tuple[str, list[str]]:
+        """构建项目/体裁上下文 + 润色审阅规则基线（供改写模型参考）."""
         context_info = ""
         genre_tags: list[str] = []
         if project_id and self._kernel:
@@ -276,10 +432,10 @@ class PipelineEditorPlugin:
                 chars = await self._kernel.context().get(ns, "characters", {})
                 if chars:
                     char_names = list(chars.get("characters", {}).keys())[:10]
-                    context_info += f"\n主要角色: {', '.join(char_names)}"
+                    if char_names:
+                        context_info += f"\n主要角色: {', '.join(char_names)}"
             except Exception:
                 pass
-            # 取项目体裁标签（用于按体裁注入靶值与红线）
             if self._kernel.db:
                 try:
                     meta = await self._kernel.db.get_project(project_id)
@@ -289,7 +445,6 @@ class PipelineEditorPlugin:
                 except Exception:
                     pass
 
-        # 注入润色/审阅规则基线（约定式自动发现：只取 §A 红线 + §C 靶值，不塞技法库全文）
         try:
             from core import knowledge_resolver as kr
 
@@ -297,456 +452,182 @@ class PipelineEditorPlugin:
             for skill in ("通用-正文润色", "通用-审阅章节正文"):
                 layers = kr.skill_layers(skill)
                 if layers.get("redlines"):
-                    rule_parts.append(f"### {skill} · 红线（违反即错）\n{layers['redlines'][:1200]}")
+                    rule_parts.append(f"### {skill} · 红线（违反即错）\n{layers['redlines'][:1000]}")
                 if layers.get("targets"):
-                    rule_parts.append(f"### {skill} · 靶值取值约定\n{layers['targets'][:800]}")
-            # 体裁量化靶值（对话占比/字数窗口等，按此判，非通用默认）
+                    rule_parts.append(f"### {skill} · 靶值取值约定\n{layers['targets'][:700]}")
             targets = kr.genre_targets(genre_tags)
             if targets:
                 tv_lines = "\n".join(f"- {k}：{v}" for k, v in targets.items())
-                rule_parts.append(f"### 本体裁量化靶值（优化时按此带，非通用默认）\n{tv_lines}")
-            # 体裁红线增量
+                rule_parts.append(f"### 本体裁量化靶值（按此带，非通用默认）\n{tv_lines}")
             for block in kr.genre_boundaries(genre_tags):
-                rule_parts.append(block[:1000])
+                rule_parts.append(block[:900])
             if rule_parts:
-                context_info += "\n\n## 优化必须遵守的规则基线\n" + "\n\n".join(rule_parts)
+                context_info += "\n\n## 改写须遵守的规则基线\n" + "\n\n".join(rule_parts)
         except Exception:
             pass
 
-        # 运行门禁链和流水线贡献者插件
-        contributor_results = []
-        if self._kernel:
-            # 如果没有外部传入的门禁结果，先从 DB 读，没有则运行门禁链
-            if not gate_issues and project_id and self._kernel.db:
-                try:
-                    gate_issues = await self._kernel.db.get_gate_results(project_id, chapter_num, volume_number)
-                except Exception:
-                    pass
-            if not gate_issues:
-                gate_issues = await self._run_gate_chain(content, project_id)
-            # 贡献者结果：先从 DB 读，没有则运行插件
-            if project_id and self._kernel.db:
-                try:
-                    contributor_results = await self._kernel.db.get_contributor_results(project_id, chapter_num, volume_number)
-                except Exception:
-                    pass
-            if not contributor_results:
-                contributor_results = await self._run_contributors(content, project_id, chapter_num, platform)
-            if contributor_results:
-                for cr in contributor_results:
-                    if cr.get("summary"):
-                        context_info += f"\n[{cr['name']}]: {cr['summary']}"
-                    for s in (cr.get("suggestions") or []):
-                        context_info += f"\n  - {s}"
+        return context_info, genre_tags
 
-        # Step 1: AI编辑批注
-        if "annotate" in steps:
-            logger.info("流水线步骤1: AI编辑批注")
-            annotate_result = await self._annotate(content, platform, context_info, gate_issues=gate_issues)
-            result["steps"].append(annotate_result)
-            result["current_content"] = annotate_result.get("optimized", content)
 
-        # Step 2: 质量分析优化（统一分析器 + LLM优化）
-        if "coach" in steps:
-            logger.info("流水线步骤2: 质量分析优化")
-            coach_result = await self._coach_optimize(
-                result["current_content"], platform, chapter_num, context_info,
-                prev_annotations=result["steps"][-1] if result["steps"] else None,
-                genre_tags=genre_tags,
+    # ==================================================================
+    # 阶段 2：定点改写
+    # ==================================================================
+
+    async def _rewrite_paragraphs(self, content: str, platform: str, evidence: dict) -> dict:
+        """只改有证据的段落，逐段返回，带长度漂移护栏."""
+        paragraphs: list[str] = evidence["paragraphs"]
+        para_evidence: dict[int, list[dict]] = evidence["para_evidence"]
+        chapter_evidence: list[dict] = evidence["chapter_evidence"]
+
+        # 组装「问题段落 + 证据」块
+        target_blocks: list[str] = []
+        for idx in sorted(para_evidence.keys()):
+            if idx >= len(paragraphs):
+                continue
+            ev_lines = "\n".join(
+                f"  - [{e['code']}|{e['source']}] {e['message']}"
+                + (f" → 建议: {e['suggestion']}" if e.get("suggestion") else "")
+                for e in para_evidence[idx]
             )
-            result["steps"].append(coach_result)
-            result["current_content"] = coach_result.get("optimized", result["current_content"])
-
-        # Step 3: AI检测降重（复用步骤2的检测结果）
-        if "detect" in steps:
-            logger.info("流水线步骤3: AI检测降重")
-            # 从步骤2获取已有的AI检测结果，避免重复调用
-            prev_ai = None
-            if result["steps"]:
-                last = result["steps"][-1]
-                if last.get("step") == "coach" and last.get("unified_report"):
-                    prev_ai = last["unified_report"].get("ai_detection")
-            detect_result = await self._detect_reduce(
-                result["current_content"], platform, context_info,
-                ai_threshold=ai_threshold, humanize_mode=humanize_mode,
-                prev_ai_detection=prev_ai,
+            target_blocks.append(
+                f"【段落 {idx}】\n原文：{paragraphs[idx].strip()}\n证据：\n{ev_lines}"
             )
-            result["steps"].append(detect_result)
-            result["current_content"] = detect_result.get("optimized", result["current_content"])
 
-        # 生成综合解释报告
-        if result["steps"] and self._kernel:
-            try:
-                explanation = await self._generate_explanation(
-                    result["original"], result["current_content"], result["steps"]
-                )
-                result["explanation"] = explanation
-            except Exception as e:
-                logger.warning(f"生成解释报告失败: {e}")
-                result["explanation"] = None
+        if not target_blocks:
+            return self._empty_rewrite(content)
 
-        return result
+        chapter_hint = ""
+        if chapter_evidence:
+            lines = "\n".join(f"- [{e['source']}] {e['message']}" for e in chapter_evidence[:15])
+            chapter_hint = f"\n## 章节级约束（改写时整体注意，不针对单段）\n{lines}\n"
 
-    async def _generate_explanation(self, original: str, optimized: str, steps: list[dict]) -> dict | None:
-        """生成综合解释报告 — 对比原文和优化版，解释修改原因."""
+        user_prompt = f"""请按证据修改下列段落。平台: {platform}
+{evidence['context_info']}
+{chapter_hint}
+## 待修改段落（共 {len(target_blocks)} 段）
+{chr(10).join(target_blocks)}
+
+严格按 JSON 格式返回 revisions（只含你实际修改的段落）。"""
+
         try:
-            # 收集各步骤的关键信息
-            step_summaries = []
-            for s in steps:
-                name = s.get("name", s.get("step", ""))
-                summary = s.get("summary", "")
-                step_summaries.append(f"- {name}: {summary}")
-
-            # 截取文本（避免过长）
-            orig_short = original[:3000] if len(original) > 3000 else original
-            opt_short = optimized[:3000] if len(optimized) > 3000 else optimized
-
-            prompt = f"""请对比以下原文和优化版，生成修改解释报告。
-
-## 执行的优化步骤
-{chr(10).join(step_summaries)}
-
-## 原文（前3000字）
-{orig_short}
-
-## 优化版（前3000字）
-{opt_short}
-
-请按照系统提示的JSON格式返回报告。注意：只返回纯JSON，不要用代码块包裹。"""
-
             resp = await self._kernel.call_llm(
-                [{"role": "system", "content": EXPLAIN_SYSTEM}, {"role": "user", "content": prompt}],
-                tier="standard", max_tokens=2000,
+                [
+                    {"role": "system", "content": REWRITE_SYSTEM},
+                    {"role": "user", "content": user_prompt},
+                ],
+                tier="standard",
+                max_tokens=8192,
+                temperature=0.4,
+                response_format={"type": "json_object"},
             )
-            content = resp.get("content", "")
-            return self._parse_json_response(content)
+            parsed = self._parse_json_response(resp.get("content", "{}"))
         except Exception as e:
-            logger.warning(f"解释报告生成异常: {e}")
-        return None
+            logger.error("定点改写 LLM 调用失败", error=str(e))
+            return self._empty_rewrite(content, summary=f"改写失败: {str(e)[:80]}")
+
+        revisions = []
+        if isinstance(parsed, dict):
+            revisions = parsed.get("revisions", [])
+        elif isinstance(parsed, list):
+            revisions = parsed
+        if not isinstance(revisions, list):
+            revisions = []
+
+        # 应用改写 + 护栏
+        new_paras = list(paragraphs)
+        changes: list[dict] = []
+        rejected = 0
+        for rev in revisions:
+            if not isinstance(rev, dict):
+                continue
+            idx_raw = rev.get("paragraph_index")
+            revised = rev.get("revised_text", "")
+            if not isinstance(idx_raw, int) or idx_raw < 0 or idx_raw >= len(paragraphs):
+                continue
+            idx = idx_raw
+            if idx not in para_evidence:
+                continue  # 只接受有证据的段落改动
+            orig = paragraphs[idx]
+            if not revised or revised.strip() == orig.strip():
+                continue
+            # 护栏：长度漂移 > ±25% 拒绝
+            o_len = max(len(orig.strip()), 1)
+            drift = abs(len(revised.strip()) - o_len) / o_len
+            if drift > 0.25:
+                rejected += 1
+                logger.info("改写护栏拒绝段落 %d：长度漂移 %.0f%%", idx, drift * 100)
+                continue
+            new_paras[idx] = revised.strip()
+            codes = rev.get("applied_fixes") or [e["code"] for e in para_evidence[idx]]
+            changes.append({
+                "paragraph_index": idx,
+                "before": orig.strip(),
+                "after": revised.strip(),
+                "applied_fixes": codes,
+                "evidence": para_evidence[idx],
+            })
+
+        optimized = "\n\n".join(new_paras)
+        diff_items = self._build_diff_items(content, optimized, None)
+        summary = f"定点修改 {len(changes)} 段"
+        if rejected:
+            summary += f"（护栏拒绝 {rejected} 段超幅改写）"
+
+        return {
+            "step": "coach",
+            "name": "定点改写",
+            "original": content,
+            "optimized": optimized,
+            "changes": changes,
+            "diff_items": diff_items,
+            "summary": summary,
+        }
 
     @staticmethod
-    def _parse_json_response(text: str) -> dict | None:
-        """从 LLM 响应中提取并解析 JSON，处理各种格式问题."""
-        if not text:
-            return None
-        # 1. 去掉代码块包裹
-        text = re.sub(r'```(?:json)?\s*', '', text)
-        text = re.sub(r'```\s*', '', text)
-        text = text.strip()
-        # 2. 尝试直接解析
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-        # 3. 用正则提取最外层 JSON 对象（非贪婪匹配第一个完整的 {}）
-        try:
-            depth = 0
-            start = -1
-            for i, ch in enumerate(text):
-                if ch == '{':
-                    if depth == 0: start = i
-                    depth += 1
-                elif ch == '}':
-                    depth -= 1
-                    if depth == 0 and start >= 0:
-                        candidate = text[start:i + 1]
-                        # 清理常见问题：尾部逗号
-                        candidate = re.sub(r',\s*([}\]])', r'\1', candidate)
-                        try:
-                            return json.loads(candidate)
-                        except json.JSONDecodeError:
-                            start = -1  # 继续找下一个
-        except Exception:
-            pass
-        # 4. 最后尝试：清理后整体解析
-        try:
-            cleaned = re.sub(r',\s*([}\]])', r'\1', text)
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            pass
-        logger.warning("无法解析 LLM 返回的 JSON")
-        return None
+    def _empty_rewrite(content: str, summary: str = "无需改动") -> dict:
+        return {
+            "step": "coach", "name": "定点改写",
+            "original": content, "optimized": content,
+            "changes": [], "diff_items": [], "summary": summary,
+        }
 
-    async def _run_gate_chain(self, content: str, project_id: str) -> list[dict]:
-        """运行所有 IQualityGate 插件，返回门禁结果."""
-        from core.quality_gate import GateChainExecutor, GateChainConfig, IQualityGate
-        try:
-            gates = []
-            for entry in await self._kernel._plugin_manager.list_active():
-                if isinstance(entry.instance, IQualityGate):
-                    gates.append(entry.instance)
-            if not gates:
-                return []
-            chain = GateChainExecutor(GateChainConfig(gates=gates))
-            gate_result = await chain.execute(
-                {"content": content, "project_id": project_id},
-                {"project_id": project_id},
-            )
-            return [
-                {"gate": g.gate_name, "verdict": g.verdict.value, "score": g.score,
-                 "issues": [{"severity": i.severity.value, "code": i.code, "message": i.message, "suggestion": i.suggestion}
-                            for i in g.issues]}
-                for g in gate_result.gates
-            ]
-        except Exception as e:
-            logger.warning(f"门禁链执行失败: {e}")
-            return []
 
-    async def _run_contributors(self, content: str, project_id: str, chapter_num: int, platform: str) -> list[dict]:
-        """并行运行所有 IPipelineContributor 插件，返回分析结果."""
-        import asyncio
-        from core.quality_gate import IPipelineContributor
-        try:
-            contributors = []
-            for entry in await self._kernel._plugin_manager.list_active():
-                if isinstance(entry.instance, IPipelineContributor):
-                    contributors.append(entry.instance)
-            if not contributors:
-                return []
-            ctx = {"project_id": project_id, "chapter_num": chapter_num, "platform": platform, "kernel": self._kernel}
-            tasks = [c.analyze(content, ctx) for c in contributors]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            output = []
-            for c, r in zip(contributors, results):
-                if isinstance(r, Exception):
-                    logger.warning(f"贡献者 {c.name} 执行失败: {r}")
-                    continue
-                r["name"] = c.name
-                output.append(r)
-            return output
-        except Exception as e:
-            logger.warning(f"贡献者执行失败: {e}")
-            return []
-
-    async def _annotate(self, content: str, platform: str, context_info: str, gate_issues: list[dict] | None = None) -> dict:
-        """AI编辑批注."""
-        try:
-            # 规则预检
-            rule_issues = self._rule_based_check(content)
-
-            # 门禁问题提示
-            gate_hint = ""
-            if gate_issues:
-                issues_text = []
-                for g in gate_issues:
-                    for i in g.get("issues", []):
-                        issues_text.append(f"- [{g.get('gate', '')}] {i.get('code', '')}: {i.get('message', '')}")
-                if issues_text:
-                    gate_hint = "\n## 门禁检测发现的问题（必须重点修复）\n" + "\n".join(issues_text) + "\n"
-
-            # LLM批注
-            user_prompt = f"""请审阅以下小说文本，找出问题并给出修改建议。
-
-## 平台: {platform}
-{context_info}
-{gate_hint}
-## 文本
-{content}
-
-请严格按照JSON格式返回批注结果。"""
-
-            resp = await self._kernel.call_llm(
-                [
-                    {"role": "system", "content": ANNOTATE_SYSTEM},
-                    {"role": "user", "content": user_prompt},
-                ],
-                tier="standard",
-                max_tokens=8192,
-                temperature=0.3,
-                response_format={"type": "json_object"},
-            )
-
-            raw = resp.get("content", "{}")
-            parsed = self._parse_json_response(raw)
-
-            # 处理LLM返回的格式：可能是列表，也可能是包含annotations键的对象
-            if isinstance(parsed, dict):
-                annotations = parsed.get("annotations", parsed.get("results", []))
-                if not isinstance(annotations, list):
-                    annotations = []
-            elif isinstance(parsed, list):
-                annotations = parsed
-            else:
-                annotations = []
-
-            logger.debug("AI编辑批注解析结果", parsed_type=type(parsed).__name__, annotations_count=len(annotations))
-
-            # 合并规则检测结果
-            if rule_issues:
-                annotations = self._merge_rule_issues(annotations, rule_issues)
-
-            # 生成优化文本
-            optimized = self._apply_annotations(content, annotations)
-
-            # 构建diff items
-            diff_items = self._build_diff_items(content, optimized, annotations)
-
-            # 统计
-            total_issues = sum(
-                len(a.get("issues", []))
-                for a in annotations
-                if a.get("has_issues")
-            )
-
-            return {
-                "step": "annotate",
-                "name": "AI编辑批注",
-                "original": content,
-                "optimized": optimized,
-                "annotations": annotations,
-                "diff_items": diff_items,
-                "summary": f"发现 {total_issues} 个问题",
-                "rule_issues": rule_issues,
-            }
-        except Exception as e:
-            logger.error("AI编辑批注失败", error=str(e))
-            return {
-                "step": "annotate",
-                "name": "AI编辑批注",
-                "original": content,
-                "optimized": content,
-                "annotations": [],
-                "diff_items": [],
-                "summary": f"批注失败: {str(e)[:100]}",
-                "error": str(e),
-            }
-
-    async def _coach_optimize(
-        self, content: str, platform: str, chapter_num: int,
-        context_info: str, prev_annotations: dict | None = None,
-        genre_tags: list[str] | None = None,
-    ) -> dict:
-        """质量分析优化 — 统一分析器(写作教练+十维评审+AI检测) + LLM优化."""
-        try:
-            # 统一质量分析（并行调用三个插件）
-            unified_report = {}
-            report_summary = ""
-            try:
-                report = await self._analyzer.analyze_text(content, platform=platform, genre_tags=genre_tags)
-                unified_report = report.to_dict()
-                report_summary = self._format_unified_report(unified_report)
-            except Exception as e:
-                logger.warning("统一质量分析失败，降级为纯教练", error=str(e))
-                # 降级：只调写作教练
-                try:
-                    coach_entry = await self._kernel.get_plugin("writing-coach")
-                    if coach_entry and coach_entry.instance:
-                        analysis = await coach_entry.instance.analyze_chapter(
-                            content, platform=platform, chapter_num=chapter_num, genre_tags=genre_tags,
-                        )
-                        report_summary = json.dumps(analysis, ensure_ascii=False, indent=2)
-                except Exception:
-                    report_summary = "（质量分析不可用）"
-
-            # 编辑批注
-            annotations_text = ""
-            if prev_annotations and prev_annotations.get("annotations"):
-                issues = []
-                for a in prev_annotations["annotations"]:
-                    if a.get("has_issues"):
-                        for issue in a.get("issues", []):
-                            issues.append(f"- [{issue.get('type','')}] {issue.get('description','')}: {issue.get('suggestion','')}")
-                if issues:
-                    annotations_text = "\n## 编辑批注发现的问题\n" + "\n".join(issues)
-
-            user_prompt = f"""请优化以下小说文本。
-
-## 平台: {platform}
-{context_info}
-
-## 统一质量分析报告
-{report_summary}
-{annotations_text}
-
-## 原文
-{content}
-
-请严格按照JSON格式返回优化结果。"""
-
-            resp = await self._kernel.call_llm(
-                [
-                    {"role": "system", "content": COACH_OPTIMIZE_SYSTEM},
-                    {"role": "user", "content": user_prompt},
-                ],
-                tier="standard",
-                max_tokens=8192,
-                temperature=0.5,
-                response_format={"type": "json_object"},
-            )
-
-            raw = resp.get("content", "{}")
-            result = self._parse_json_response(raw)
-            optimized = result.get("optimized_text", content)
-            changes = result.get("changes", [])
-            summary = result.get("summary", "")
-
-            diff_items = self._build_diff_items(content, optimized, None)
-
-            return {
-                "step": "coach",
-                "name": "质量分析优化",
-                "original": content,
-                "optimized": optimized,
-                "changes": changes,
-                "diff_items": diff_items,
-                "summary": summary or f"优化了 {len(changes)} 处",
-                "unified_report": unified_report,
-                "report_summary": report_summary,
-            }
-        except Exception as e:
-            logger.error("质量分析优化失败", error=str(e))
-            return {
-                "step": "coach",
-                "name": "质量分析优化",
-                "original": content,
-                "optimized": content,
-                "changes": [],
-                "diff_items": [],
-                "summary": f"优化失败: {str(e)[:100]}",
-                "error": str(e),
-            }
+    # ==================================================================
+    # 阶段 3：重测 + 条件降重
+    # ==================================================================
 
     async def _detect_reduce(
-        self, content: str, platform: str, context_info: str,
-        ai_threshold: float = 0.3, humanize_mode: str = "unified",
+        self, content: str, platform: str,
+        ai_threshold: float = 0.2, humanize_mode: str = "unified",
         prev_ai_detection: dict | None = None,
     ) -> dict:
-        """AI检测降重 — 使用 TextTransformer 统一入口."""
+        """AI检测降重 — 复用前序检测结果，超标才降重."""
         try:
-            # 如果步骤2已有AI检测结果且内容未变，直接复用
-            ai_score_before = None
+            # prev_ai_detection["ai_score"] 是人类度（越高越像人类），换算成 AI 率再比阈值
+            ai_rate_before = None
             if prev_ai_detection and prev_ai_detection.get("ai_score") is not None:
-                ai_score_before = prev_ai_detection["ai_score"]
-                logger.info("复用步骤2的AI检测结果: ai_score=%.3f", ai_score_before)
+                ai_rate_before = round(1.0 - float(prev_ai_detection["ai_score"]), 3)
 
-            # 如果已有检测结果且未超标，直接返回
-            if ai_score_before is not None and ai_score_before <= ai_threshold:
+            if ai_rate_before is not None and ai_rate_before <= ai_threshold:
                 return {
-                    "step": "detect",
-                    "name": "AI检测降重",
-                    "original": content,
-                    "optimized": content,
-                    "ai_score_before": ai_score_before,
-                    "ai_score_after": ai_score_before,
+                    "step": "detect", "name": "AI检测降重",
+                    "original": content, "optimized": content,
+                    "ai_score_before": ai_rate_before, "ai_score_after": ai_rate_before,
                     "diff_items": [],
-                    "summary": f"AI率 {ai_score_before:.0%}，未超过阈值 {ai_threshold:.0%}，无需降重",
+                    "summary": f"AI率 {ai_rate_before:.0%}，未超阈值 {ai_threshold:.0%}，无需降重",
                     "reduction_applied": False,
                 }
 
-            # 通过 TextTransformer 执行检测+降重
             step_result = await self._transformer.detect_reduce(
                 content, threshold=ai_threshold, mode=humanize_mode,
             )
             meta = step_result.metadata
             reduced = step_result.output_text
-
             diff_items = self._build_diff_items(content, reduced, None) if step_result.changed else []
 
             return {
-                "step": "detect",
-                "name": "AI检测降重",
-                "original": content,
-                "optimized": reduced,
+                "step": "detect", "name": "AI检测降重",
+                "original": content, "optimized": reduced,
                 "ai_score_before": meta.get("ai_score_before", 0),
                 "ai_score_after": meta.get("ai_score_after", meta.get("ai_score_before", 0)),
                 "diff_items": diff_items,
@@ -758,263 +639,260 @@ class PipelineEditorPlugin:
         except Exception as e:
             logger.error("AI检测降重失败", error=str(e))
             return {
-                "step": "detect",
-                "name": "AI检测降重",
-                "original": content,
-                "optimized": content,
-                "ai_score_before": 0,
-                "ai_score_after": 0,
-                "diff_items": [],
-                "summary": f"检测失败: {str(e)[:100]}",
-                "error": str(e),
+                "step": "detect", "name": "AI检测降重",
+                "original": content, "optimized": content,
+                "ai_score_before": 0, "ai_score_after": 0, "diff_items": [],
+                "summary": f"检测失败: {str(e)[:100]}", "error": str(e),
             }
 
     # ==================================================================
-    # 内部工具
+    # 报告：全部用实测值构建（不让 LLM 编分数）
     # ==================================================================
 
+    def _build_grounded_report(
+        self, evidence: dict, after_report: dict, original: str, optimized: str,
+    ) -> dict:
+        """对比 before/after 实测报告 + 改写记录，构建可追溯的解释报告.
+
+        分数来自分析器实算的 overall_score；问题来自真实检测命中；
+        改进来自 before/after 的 issue 差集与 AI 率变化。
+        """
+        before = evidence["baseline_report"]
+        b_score = round(before.get("overall_score", 0) * 100)
+        a_score = round(after_report.get("overall_score", b_score / 100) * 100)
+        b_grade = before.get("grade", "?")
+        a_grade = after_report.get("grade", b_grade)
+
+        # before 的真实问题
+        before_issues = [i.get("message", "") for i in before.get("issues", []) if i.get("message")]
+
+        # 改进 = 消失的问题（按 message 差集）+ AI 率变化
+        after_msgs = {i.get("message", "") for i in after_report.get("issues", [])}
+        resolved = [m for m in before_issues if m and m not in after_msgs]
+        improvements: list[str] = []
+        b_ai = before.get("ai_detection", {}).get("ai_score")
+        a_ai = after_report.get("ai_detection", {}).get("ai_score")
+        if b_ai is not None and a_ai is not None and a_ai > b_ai:
+            improvements.append(f"AI人类度 {b_ai:.0%} → {a_ai:.0%}")
+        if resolved:
+            improvements.append(f"消除 {len(resolved)} 个检测问题")
+        # 低分维度回升
+        b_dims = before.get("dimension_scores", {})
+        a_dims = after_report.get("dimension_scores", {})
+        for k, bv in b_dims.items():
+            av = a_dims.get(k, bv)
+            if av > bv:
+                improvements.append(f"{DIM_NAMES.get(k, k)} {bv}→{av}")
+
+        # 收集改写 changes（由 run_pipeline 在改写后回填到 evidence）
+        changes: list[dict] = []
+        rewrite_changes = evidence.get("_rewrite_changes", [])
+        for ch in rewrite_changes:
+            ev_list = ch.get("evidence") or []
+            ev0 = ev_list[0] if ev_list else {}
+            code0 = (ch.get("applied_fixes") or [ev0.get("code", "")])[0]
+            # 内联批注用：把该段所有证据拼成一句「怎么改 + 原因」
+            reasons = [e.get("message", "") for e in ev_list if e.get("message")]
+            sources = list(dict.fromkeys(e.get("source", "") for e in ev_list if e.get("source")))
+            changes.append({
+                "paragraph_index": ch.get("paragraph_index"),
+                "original_snippet": (ch.get("before", "") or "")[:60],
+                "optimized_snippet": (ch.get("after", "") or "")[:60],
+                "reason": "；".join(reasons) if reasons else "按证据修改",
+                "evidence_source": "、".join(sources),
+                "evidence": [
+                    {"source": e.get("source", ""), "message": e.get("message", ""),
+                     "suggestion": e.get("suggestion", ""), "code": e.get("code", "")}
+                    for e in ev_list
+                ],
+                "type": _code_to_type(code0),
+            })
+
+        # 文字结论 — 全部基于真实数字模板化生成（不调 LLM，零幻觉）
+        n_changed = len(rewrite_changes)
+        delta = a_score - b_score
+        if n_changed == 0:
+            summary = f"未发现需修改段落，质量评分 {b_score} 分（{b_grade}），正文保持原样。"
+            comparison = "本次未做改动，原文已达当前规则基线。"
+            recommendation = "保留原文。"
+        else:
+            trend = f"提升 {delta} 分" if delta > 0 else (f"下降 {abs(delta)} 分" if delta < 0 else "评分持平")
+            summary = (f"基于规则/门禁/AI检测的真实命中，定点修改 {n_changed} 段；"
+                       f"综合评分 {b_score}→{a_score}（{trend}）。")
+            comparison = (f"优化前 {b_score} 分（{b_grade}），优化后 {a_score} 分（{a_grade}）。"
+                          + (f"已解决：{ '；'.join(resolved[:3]) }。" if resolved else ""))
+            recommendation = "建议采用优化版。" if delta >= 0 else "评分未提升，建议人工复核后再决定是否采用。"
+
+        return {
+            "summary": summary,
+            "quality_before": {"score": b_score, "grade": b_grade, "issues": before_issues[:8]},
+            "quality_after": {"score": a_score, "grade": a_grade, "improvements": improvements[:8]},
+            "changes": changes[:50],
+            "comparison": comparison,
+            "recommendation": recommendation,
+            "grounded": True,  # 标记：分数源自实测，非 LLM 生成
+        }
+
+
+    # ==================================================================
+    # 工具方法
+    # ==================================================================
+
+    @staticmethod
+    def _parse_json_response(text: str) -> Any:
+        """从 LLM 响应中提取并解析 JSON，处理代码块包裹、尾逗号、截断等问题."""
+        if not text:
+            return {}
+        text = re.sub(r'```(?:json)?\s*', '', text)
+        text = re.sub(r'```\s*', '', text).strip()
+        # 直接解析
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        # 按括号配对提取第一个完整对象/数组
+        for start_char, end_char in (('{', '}'), ('[', ']')):
+            start = text.find(start_char)
+            if start < 0:
+                continue
+            depth = 0
+            for i in range(start, len(text)):
+                if text[i] == start_char:
+                    depth += 1
+                elif text[i] == end_char:
+                    depth -= 1
+                    if depth == 0:
+                        candidate = re.sub(r',\s*([}\]])', r'\1', text[start:i + 1])
+                        try:
+                            return json.loads(candidate)
+                        except json.JSONDecodeError:
+                            break
+        # 兜底：清理尾逗号后整体解析
+        try:
+            return json.loads(re.sub(r',\s*([}\]])', r'\1', text))
+        except json.JSONDecodeError:
+            pass
+        logger.warning("无法解析 LLM 返回的 JSON", preview=text[:200])
+        return {}
+
+    async def _run_gate_chain(self, content: str, project_id: str) -> list[dict]:
+        """运行所有 IQualityGate 插件（含 skill builder 创建的），返回门禁结果."""
+        from core.quality_gate import GateChainConfig, GateChainExecutor, IQualityGate
+        try:
+            gates = []
+            for entry in await self._kernel._plugin_manager.list_active():
+                if isinstance(entry.instance, IQualityGate):
+                    gates.append(entry.instance)
+            if not gates:
+                return []
+            # 只跑一轮采集证据：不自动修订（修订交给定点改写阶段），避免 LLM 门禁重复执行
+            chain = GateChainExecutor(GateChainConfig(gates=gates, max_revision_rounds=1))
+
+            async def _no_revise(chapter: dict, results: list) -> dict:
+                return chapter
+
+            gate_result = await chain.execute(
+                {"content": content, "project_id": project_id},
+                {"project_id": project_id},
+                on_revise=_no_revise,
+            )
+            return [
+                {"gate": g.gate_name, "verdict": g.verdict.value, "score": g.score,
+                 "issues": [{"severity": i.severity.value, "code": i.code,
+                             "message": i.message, "suggestion": i.suggestion}
+                            for i in g.issues]}
+                for g in gate_result.gate_results
+            ]
+        except Exception as e:
+            logger.warning(f"门禁链执行失败: {e}")
+            return []
+
+    async def _run_contributors(self, content: str, project_id: str, chapter_num: int, platform: str) -> list[dict]:
+        """并行运行所有 IPipelineContributor 插件（含 skill builder 创建的）."""
+        import asyncio
+
+        from core.quality_gate import IPipelineContributor
+        try:
+            contributors = []
+            for entry in await self._kernel._plugin_manager.list_active():
+                if isinstance(entry.instance, IPipelineContributor):
+                    contributors.append(entry.instance)
+            if not contributors:
+                return []
+            ctx = {"project_id": project_id, "chapter_num": chapter_num,
+                   "platform": platform, "kernel": self._kernel}
+            tasks = [c.analyze(content, ctx) for c in contributors]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            output: list[dict] = []
+            for c, r in zip(contributors, results, strict=False):
+                if isinstance(r, BaseException):
+                    logger.warning(f"贡献者 {c.name} 执行失败: {r}")
+                    continue
+                r["name"] = c.name
+                output.append(r)
+            return output
+        except Exception as e:
+            logger.warning(f"贡献者执行失败: {e}")
+            return []
+
     def _rule_based_check(self, content: str) -> list[dict]:
-        """基于规则的预检（不调用LLM）."""
+        """基于规则的预检（不调用 LLM），命中项带 paragraph_index."""
         issues = []
         paragraphs = content.split("\n\n")
+
+        ai_openings = [
+            (r'^在.{2,15}中，', "AI模板开头「在...中」"),
+            (r'^随着.{2,20}，', "AI模板开头「随着...」"),
+            (r'^当.{2,15}时，', "AI模板开头「当...时」"),
+            (r'^在这个.{2,10}', "AI模板开头「在这个...」"),
+        ]
+        emotion_labels = ["心中充满了", "内心涌起", "不禁感到", "心中一阵"]
 
         for i, para in enumerate(paragraphs):
             para = para.strip()
             if not para:
                 continue
-
-            # 检查段落过长（可能是注水）
             if len(para) > 500:
                 issues.append({
-                    "paragraph_index": i,
-                    "type": "poison",
-                    "severity": "low",
+                    "paragraph_index": i, "type": "poison", "severity": "low",
                     "description": f"段落过长（{len(para)}字），可能影响阅读体验",
                     "suggestion": "考虑拆分为多个段落",
                 })
-
-            # 检查AI味开头
-            ai_openings = [
-                (r'^在.{2,15}中，', "AI模板开头「在...中」"),
-                (r'^随着.{2,20}，', "AI模板开头「随着...」"),
-                (r'^当.{2,15}时，', "AI模板开头「当...时」"),
-                (r'^在这个.{2,10}', "AI模板开头「在这个...」"),
-            ]
             for pattern, desc in ai_openings:
                 if re.match(pattern, para):
                     issues.append({
-                        "paragraph_index": i,
-                        "type": "ai_taste",
-                        "severity": "medium",
-                        "description": desc,
-                        "suggestion": "换一个更自然的开头方式",
+                        "paragraph_index": i, "type": "ai_taste", "severity": "medium",
+                        "description": desc, "suggestion": "换一个更自然的开头方式",
                     })
                     break
-
-            # 检查情感标签
-            emotion_labels = ["心中充满了", "内心涌起", "不禁感到", "心中一阵"]
             for label in emotion_labels:
                 if label in para:
                     issues.append({
-                        "paragraph_index": i,
-                        "type": "ai_taste",
-                        "severity": "low",
+                        "paragraph_index": i, "type": "ai_taste", "severity": "low",
                         "description": f"情感标签化表达「{label}」",
                         "suggestion": "用具体行为或细节替代情感标签",
                     })
 
         return issues
 
-    def _parse_json_response(self, raw: str) -> Any:
-        """解析LLM返回的JSON."""
-        # 尝试直接解析
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            pass
-
-        # 尝试提取 ```json ... ``` 代码块（贪婪匹配）
-        json_match = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', raw)
-        if json_match:
-            try:
-                return json.loads(json_match.group(1))
-            except json.JSONDecodeError:
-                pass
-
-        # 尝试找第一个JSON对象或数组（按括号配对）
-        for start_char, end_char in [('{', '}'), ('[', ']')]:
-            start = raw.find(start_char)
-            if start < 0:
-                continue
-            # 找到对应的闭合括号
-            depth = 0
-            for i in range(start, len(raw)):
-                if raw[i] == start_char:
-                    depth += 1
-                elif raw[i] == end_char:
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            return json.loads(raw[start:i + 1])
-                        except json.JSONDecodeError:
-                            break
-                        break
-
-        logger.warning("无法解析JSON响应", raw_preview=raw[:200])
-        return [] if raw.strip().startswith('[') else {}
-
-    def _merge_rule_issues(self, llm_annotations: list, rule_issues: list) -> list:
-        """合并规则检测结果到LLM批注中."""
-        if not isinstance(llm_annotations, list):
-            return llm_annotations
-
-        # 按段落索引组织规则问题
-        rule_by_para = {}
-        for issue in rule_issues:
-            idx = issue.get("paragraph_index", 0)
-            if idx not in rule_by_para:
-                rule_by_para[idx] = []
-            rule_by_para[idx].append(issue)
-
-        # 合并
-        for ann in llm_annotations:
-            idx = ann.get("paragraph_index", 0)
-            if idx in rule_by_para:
-                existing = ann.get("issues", [])
-                existing.extend(rule_by_para.pop(idx))
-                ann["issues"] = existing
-                ann["has_issues"] = True
-
-        # 添加仅规则检测到的问题
-        for idx, issues in rule_by_para.items():
-            llm_annotations.append({
-                "paragraph_index": idx,
-                "has_issues": True,
-                "issues": issues,
-            })
-
-        return llm_annotations
-
-    def _apply_annotations(self, content: str, annotations: list) -> str:
-        """应用批注生成优化文本."""
-        if not annotations or not isinstance(annotations, list):
-            return content
-
-        paragraphs = content.split("\n\n")
-        result = []
-
-        for i, para in enumerate(paragraphs):
-            ann = next((a for a in annotations if a.get("paragraph_index") == i), None)
-            if ann and ann.get("has_issues") and ann.get("revised_text"):
-                result.append(ann["revised_text"])
-            else:
-                result.append(para)
-
-        return "\n\n".join(result)
-
     def _build_diff_items(self, original: str, optimized: str, annotations: list | None) -> list:
-        """构建段落级diff items供前端渲染."""
+        """构建段落级 diff items 供前端渲染."""
         orig_paras = original.split("\n\n")
         opt_paras = optimized.split("\n\n")
         items = []
-
         max_len = max(len(orig_paras), len(opt_paras))
         for i in range(max_len):
             op = orig_paras[i].strip() if i < len(orig_paras) else ""
             fp = opt_paras[i].strip() if i < len(opt_paras) else ""
             if not op and not fp:
                 continue
-
-            is_changed = op != fp
-            reason = ""
-            if annotations and isinstance(annotations, list):
-                ann = next((a for a in annotations if a.get("paragraph_index") == i), None)
-                if ann and ann.get("has_issues"):
-                    issues = ann.get("issues", [])
-                    reason = "; ".join(iss.get("description", "") for iss in issues[:3])
-
             items.append({
-                "index": i,
-                "orig": op,
-                "final": fp,
-                "isChanged": is_changed,
-                "reason": reason,
+                "index": i, "orig": op, "final": fp,
+                "isChanged": op != fp, "reason": "",
             })
-
         return items
 
-    def _format_unified_report(self, report: dict) -> str:
-        """将统一质量报告格式化为 LLM 可读的文本."""
-        lines = []
 
-        overall = report.get("overall_score", 0)
-        grade = report.get("grade", "D")
-        lines.append(f"综合评分: {overall:.1%} (等级 {grade})")
-        lines.append("")
 
-        # 写作教练
-        wq = report.get("writing_quality", {})
-        if wq:
-            lines.append(f"### 写作教练 (得分: {wq.get('score', 0):.1%})")
-            if wq.get("metrics"):
-                m = wq["metrics"]
-                lines.append(f"- 对话占比: {m.get('dialogue_ratio', 0)}%")
-                lines.append(f"- 段落均长: {m.get('avg_paragraph_length', 0)}字")
-                lines.append(f"- 开头对话: {'是' if m.get('opens_with_dialogue') else '否'}")
-                lines.append(f"- 结尾钩子: {'有' if m.get('has_ending_hook') else '无'}")
-                lines.append(f"- 手机适配: {'是' if m.get('mobile_friendly') else '否'}")
-            for s in wq.get("suggestions", [])[:5]:
-                if isinstance(s, dict):
-                    lines.append(f"- [{s.get('area','')}] {s.get('issue','')}: {s.get('fix','')}")
-            lines.append("")
 
-        # 十维评审
-        dims = report.get("dimension_scores", {})
-        if dims:
-            dim_names = {
-                "hook_strength": "开篇吸引力", "character_depth": "人物塑造",
-                "pacing": "节奏控制", "emotional_resonance": "情感共鸣",
-                "world_coherence": "世界观", "style_uniqueness": "风格独特性",
-                "payoff_density": "爽点密度", "suspense": "悬念感",
-                "chapter_hook": "章尾钩子", "theme_depth": "主题深度",
-            }
-            lines.append("### 十维评审")
-            for key, name in dim_names.items():
-                val = dims.get(key, 0)
-                bar = "█" * int(val) + "░" * (10 - int(val))
-                lines.append(f"- {name}: {val}/10 {bar}")
-            low_dims = [(dim_names.get(k, k), v) for k, v in dims.items() if v < 6]
-            if low_dims:
-                lines.append(f"⚠️ 低分维度 (< 6): {', '.join(f'{n}({v})' for n, v in low_dims)}")
-            lines.append("")
 
-        # AI检测
-        ai = report.get("ai_detection", {})
-        if ai:
-            ai_score = ai.get("ai_score", 0)
-            lines.append(f"### AI检测 (人类度: {ai_score:.0%})")
-            lines.append(f"- 判定: {'⚠️ 疑似AI' if ai.get('is_likely_ai') else '✅ 通过'}")
-            total = ai.get("total_issues", 0)
-            if total:
-                lines.append(f"- 检测问题数: {total}")
-            lines.append("")
-
-        # 问题汇总
-        issues = report.get("issues", [])
-        if issues:
-            lines.append(f"### 问题汇总 ({len(issues)}个)")
-            for iss in issues[:10]:
-                sev = iss.get("severity", "info")
-                lines.append(f"- [{sev}] {iss.get('message', '')}")
-            if len(issues) > 10:
-                lines.append(f"... 还有 {len(issues) - 10} 个问题")
-            lines.append("")
-
-        # 亮点
-        strengths = report.get("strengths", [])
-        if strengths:
-            lines.append("### 亮点")
-            for s in strengths[:5]:
-                lines.append(f"- ✅ {s}")
-
-        return "\n".join(lines)

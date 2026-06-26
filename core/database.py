@@ -526,6 +526,19 @@ class DatabaseManager:
         return {"original": r["original_content"], "optimized": r["optimized_content"],
                 "explanation": explanation, "created_at": r["created_at"]}
 
+    async def list_optimization_results(self, pid: str) -> list[dict]:
+        """列出项目下所有已保存的优化结果（每章节最近一次）."""
+        rows = await self._fetch(
+            "SELECT chapter_number, volume_number, original_content, optimized_content, created_at "
+            "FROM optimization_results WHERE project_id=? ORDER BY volume_number, chapter_number",
+            (pid,))
+        return [
+            {"chapter_number": r["chapter_number"], "volume_number": r["volume_number"],
+             "original": r["original_content"], "optimized": r["optimized_content"],
+             "created_at": r["created_at"]}
+            for r in rows
+        ]
+
     # ---- Chapter ----
 
     async def save_chapter(

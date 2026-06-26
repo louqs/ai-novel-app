@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from starlette.status import HTTP_404_NOT_FOUND
 
@@ -402,7 +402,7 @@ async def run_optimize_pipeline(project_id: str, data: dict):
         chapter_num: int,
         volume_number: int = 1,
         steps: ["annotate", "coach", "detect"],  // 可选，默认全部
-        ai_threshold: float = 0.3,
+        ai_threshold: float = 0.2,
         humanize_mode: str = "standard"
     }
     """
@@ -487,7 +487,7 @@ async def optimize_text(data: dict):
         content: str,
         platform: str = "fanqie",
         steps: [...],
-        ai_threshold: float = 0.3,
+        ai_threshold: float = 0.2,
         humanize_mode: str = "standard"
     }
     """
@@ -545,6 +545,259 @@ async def save_pipeline_result(project_id: str, data: dict):
 
     await kernel.write_project_file(project_id, f"chapters/{chapter_id}.md", content)
     return {"status": "saved", "chapter_id": chapter_id, "word_count": len(content)}
+
+
+@router.post("/api/v1/projects/{project_id}/pipeline/apply-all", response_model=dict)
+async def apply_all_optimization(project_id: str, data: dict | None = None):
+    """把已保存的优化结果批量应用到对应章节（自动快照旧版本）.
+
+    body（可选）: { chapters: [{chapter_num, volume_number}, ...] }
+        给定则只应用这些章节；不给则应用项目下全部已优化章节。
+    """
+    kernel = await get_kernel()
+    if not kernel.db:
+        raise HTTPException(status_code=400, detail="数据库不可用，无法批量应用")
+
+    results = await kernel.db.list_optimization_results(project_id)
+    if not results:
+        return {"status": "noop", "applied": 0, "message": "没有可应用的优化结果"}
+
+    # 可选过滤
+    wanted = None
+    if data and isinstance(data.get("chapters"), list):
+        wanted = {(int(c.get("chapter_num", c.get("chapter_number", 0))),
+                   int(c.get("volume_number", 1))) for c in data["chapters"]}
+
+    applied, skipped = [], []
+    for r in results:
+        ch_num = r["chapter_number"]
+        vol_num = r["volume_number"] or 1
+        optimized = r.get("optimized") or ""
+        if wanted is not None and (ch_num, vol_num) not in wanted:
+            continue
+        if not optimized:
+            skipped.append(ch_num)
+            continue
+        chapter_id = f"ch_v{vol_num:02d}_{ch_num:04d}"
+        await kernel.db.save_chapter(
+            chapter_id, project_id, ch_num, f"第{vol_num}卷第{ch_num}章", optimized,
+            volume=vol_num, snapshot_source="optimize_apply",
+            snapshot_summary="批量应用优化结果前自动快照",
+        )
+        await kernel.write_project_file(project_id, f"chapters/{chapter_id}.md", optimized)
+        applied.append(ch_num)
+
+    return {"status": "applied", "applied": len(applied), "skipped": len(skipped),
+            "applied_chapters": applied}
+
+
+@router.post("/api/v1/projects/{project_id}/pipeline/zhuque-reduce", response_model=dict)
+async def zhuque_reduce(project_id: str, data: dict):
+    """以朱雀回填分数为补充，对优化后文本执行针对性降重.
+
+    互补逻辑：取 min(本地人类度, 朱雀人类度) 作为严格判据——
+    两个检测器都认可才放行，否则以更严格的那个触发降重。
+
+    body: {
+        content: str,
+        zhuque_ai_rate: float,   # 朱雀检测到的 AI 率，0-100
+        chapter_num: int,
+        volume_number: int = 1,
+        humanize_mode: str = "unified",
+        ai_threshold: float = 0.2
+    }
+    """
+    kernel = await get_kernel()
+    content = data.get("content", "")
+    if not content:
+        raise HTTPException(status_code=400, detail="需要 content")
+
+    zhuque_ai_rate = float(data.get("zhuque_ai_rate", 0)) / 100.0  # 转换为 0-1
+    zhuque_human = 1.0 - zhuque_ai_rate           # 转为人类度（与本地 ai_score 同语义）
+    ai_threshold = float(data.get("ai_threshold", 0.2))
+    humanize_mode = data.get("humanize_mode", "unified")
+    ch_num = int(data.get("chapter_num", 0))
+    vol_num = int(data.get("volume_number", 1))
+
+    # 先取本地检测分
+    local_human = 1.0  # 默认满分（无法检测时不干预）
+    try:
+        entry = await kernel.get_plugin("anti-ai-detection")
+        if entry and entry.instance:
+            detect = await entry.instance.detect(content)
+            local_human = detect.get("ai_score", 1.0)   # anti_ai plugin 的 ai_score 即人类度
+    except Exception:
+        pass
+
+    # 取更严格的判据
+    effective_human = min(local_human, zhuque_human)
+    needs_reduce = effective_human <= ai_threshold
+
+    triggered_by = []
+    if local_human <= ai_threshold:
+        triggered_by.append(f"本地检测人类度 {local_human:.0%}")
+    if zhuque_human <= ai_threshold:
+        triggered_by.append(f"朱雀AI率 {zhuque_ai_rate:.0%}")
+
+    if not needs_reduce:
+        return {
+            "changed": False, "reduced_text": content,
+            "local_human": round(local_human, 3),
+            "zhuque_human": round(zhuque_human, 3),
+            "effective_human": round(effective_human, 3),
+            "summary": (f"本地人类度 {local_human:.0%}，朱雀人类度 {zhuque_human:.0%}，"
+                        f"均高于阈值 {ai_threshold:.0%}，无需降重"),
+        }
+
+    # 执行降重（把朱雀判断的侧重点写进提示，给引擎更明确方向）
+    try:
+        from core.text_transformer import TextTransformer
+        tr = TextTransformer(kernel)
+        step = await tr.deai(content, mode=humanize_mode)
+        reduced = step.output_text
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"降重失败: {e}") from e
+
+    # 更新 DB 里该章的优化结果
+    if kernel.db and ch_num:
+        try:
+            existing = await kernel.db.get_optimization_result(project_id, ch_num, vol_num)
+            orig = existing["original"] if existing else content
+            explanation = existing.get("explanation") or {} if existing else {}
+            explanation["zhuque_ai_rate"] = round(zhuque_ai_rate * 100, 1)
+            explanation["zhuque_reduce_applied"] = True
+            await kernel.db.save_optimization_result(project_id, ch_num, vol_num, orig, reduced, explanation)
+        except Exception:
+            pass
+
+    return {
+        "changed": True, "reduced_text": reduced,
+        "local_human": round(local_human, 3),
+        "zhuque_human": round(zhuque_human, 3),
+        "effective_human": round(effective_human, 3),
+        "triggered_by": triggered_by,
+        "summary": f"降重已执行（{' + '.join(triggered_by)} 低于阈值 {ai_threshold:.0%}）",
+    }
+
+
+@router.get("/api/v1/projects/{project_id}/pipeline/export-text", response_model=dict)
+async def export_optimized_text(project_id: str, separator: str = "\n\n---\n\n"):
+    """合并所有已优化章节为一个文本，供用户导出去朱雀检测.
+
+    返回: { text: str, chapter_count: int }
+    各章用 separator 分隔，每章前附「第N章 标题」章头。
+    """
+    kernel = await get_kernel()
+    if not kernel.db:
+        raise HTTPException(status_code=400, detail="数据库不可用")
+
+    results = await kernel.db.list_optimization_results(project_id)
+    if not results:
+        return {"text": "", "chapter_count": 0, "message": "暂无已优化章节"}
+
+    parts = []
+    for r in results:
+        ch_num = r["chapter_number"]
+        vol_num = r["volume_number"] or 1
+        body = (r.get("optimized") or "").strip()
+        if body:
+            parts.append(f"【第{vol_num}卷第{ch_num}章】\n{body}")
+
+    return {
+        "text": separator.join(parts),
+        "chapter_count": len(parts),
+    }
+
+
+@router.post("/api/v1/projects/{project_id}/pipeline/import-zhuque-report", response_model=dict)
+async def import_zhuque_report(
+    project_id: str,
+    file: UploadFile = File(...),
+    chapter_num: int = 0,
+    volume_number: int = 1,
+    ai_threshold: float = 0.2,
+    humanize_mode: str = "unified",
+    auto_reduce: bool = True,
+):
+    """导入朱雀检测报告 PDF，纯正则解析（不调 LLM），用解析出的 AI 率触发降重.
+
+    解析出整体 AI 率与各高 AIGC 片段后：
+    - 若 auto_reduce 且整体 AI 率 > 阈值 → 自动对该章降重
+    - 否则只返回解析结果供前端展示
+    """
+    from core.zhuque_report_parser import parse_report_pdf
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+
+    try:
+        report = parse_report_pdf(raw)
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    if not report.parse_ok:
+        raise HTTPException(
+            status_code=422,
+            detail="未能从报告中解析出检测数据，请确认是朱雀「打印为PDF」的报告",
+        )
+
+    result: dict = {"report": report.to_dict(), "reduction": None}
+    ai_rate = report.overall_ai_rate
+
+    if not auto_reduce or ai_rate <= ai_threshold:
+        result["summary"] = (
+            f"朱雀整体AI率 {ai_rate:.0%}，未超阈值 {ai_threshold:.0%}，无需降重"
+            if ai_rate <= ai_threshold else
+            f"朱雀整体AI率 {ai_rate:.0%}（已解析 {len(report.segments)} 个片段）"
+        )
+        return result
+
+    # 取该章当前内容降重
+    kernel = await get_kernel()
+    content = ""
+    if kernel.db and chapter_num:
+        existing = await kernel.db.get_optimization_result(project_id, chapter_num, volume_number)
+        if existing:
+            content = existing.get("optimized") or existing.get("original") or ""
+        if not content:
+            ch = await kernel.db.get_chapter(project_id, chapter_num, volume_number)
+            content = ch.get("content", "") if ch else ""
+    if not content:
+        result["summary"] = f"朱雀整体AI率 {ai_rate:.0%}，但未找到第{chapter_num}章内容，无法降重"
+        return result
+
+    try:
+        from core.text_transformer import TextTransformer
+        tr = TextTransformer(kernel)
+        step = await tr.deai(content, mode=humanize_mode)
+        reduced = step.output_text
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"降重失败: {e}") from e
+
+    # 回写优化结果，并记录朱雀报告数据
+    if kernel.db and chapter_num:
+        try:
+            existing = await kernel.db.get_optimization_result(project_id, chapter_num, volume_number)
+            orig = existing["original"] if existing else content
+            explanation = (existing.get("explanation") or {}) if existing else {}
+            explanation["zhuque_report"] = report.to_dict()
+            explanation["zhuque_ai_rate"] = round(ai_rate * 100, 1)
+            explanation["zhuque_reduce_applied"] = True
+            await kernel.db.save_optimization_result(
+                project_id, chapter_num, volume_number, orig, reduced, explanation)
+        except Exception:
+            pass
+
+    result["reduction"] = {
+        "changed": content != reduced,
+        "reduced_text": reduced,
+        "ai_rate_before": round(ai_rate, 3),
+    }
+    result["summary"] = (
+        f"朱雀整体AI率 {ai_rate:.0%} 超过阈值 {ai_threshold:.0%}，已对第{chapter_num}章降重"
+    )
+    return result
 
 
 @router.get("/api/v1/projects/{project_id}/pipeline/result/{ch_num}")
@@ -606,7 +859,7 @@ async def transform_text(data: dict):
         platform: str = "fanqie",
         mode: str = "standard",        # deai 模式
         style_mode: str = "rewrite",   # style 模式
-        threshold: float = 0.3,        # detect_reduce 阈值
+        threshold: float = 0.2,        # detect_reduce 阈值
     }
     """
     kernel = await get_kernel()

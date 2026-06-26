@@ -1531,7 +1531,7 @@ async function loadForeshadows() {
         // 隐藏待填充列表（合并到待回收）
         document.getElementById('foreshadow-pending').style.display = 'none';
         if (paid.length === 0) doneList.innerHTML = '<p class="muted">暂无</p>';
-        else { doneList.innerHTML = paid.slice(0, 5).map(function(f) { return '<div style="padding:4px;margin:2px 0;font-size:11px;opacity:0.6">✓ ' + (f.description || '').substring(0, 40) + '</div>'; }).join(''); if (paid.length > 5) doneList.innerHTML += '<p class="muted" style="font-size:11px">...还有' + (paid.length - 5) + '个</p>'; }
+        else { doneList.innerHTML = paid.map(function(f) { return '<div style="padding:4px;margin:2px 0;font-size:11px;opacity:0.6">✓ ' + esc(f.description || '').substring(0, 60) + '<span style="color:var(--text-muted);margin-left:6px">Ch' + (f.payoff_chapter || f.planted_chapter || '?') + '</span></div>'; }).join(''); }
     } catch(e) { pendingList.innerHTML = '<p class="error">加载失败</p>'; torecoverList.innerHTML = ''; doneList.innerHTML = ''; }
 }
 function showAddForeshadow() { document.getElementById('foreshadow-add-form').style.display = 'block'; }

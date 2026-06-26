@@ -85,7 +85,7 @@ class TextTransformer:
                 adversarial_iterations: int = 2
                 style_platform: str = "fanqie"
                 style_mode: str = "rewrite"
-                detect_threshold: float = 0.3
+                detect_threshold: float = 0.2
         """
         result = TransformResult(original=content, final=content)
         current = content
@@ -192,7 +192,7 @@ class TextTransformer:
         self,
         content: str,
         *,
-        threshold: float = 0.3,
+        threshold: float = 0.2,
         mode: str = "standard",
         **kwargs: Any,
     ) -> StepResult:
@@ -209,29 +209,30 @@ class TextTransformer:
 
         detector = entry.instance
         detect_result = await detector.detect(content)
-        ai_score = detect_result.get("ai_score", 0)
+        human_score = detect_result.get("ai_score", 1.0)  # 人类度：越高越像人类
+        ai_rate = round(1.0 - human_score, 3)             # AI率：越高越像AI
 
-        if ai_score <= threshold:
+        if ai_rate <= threshold:
             return StepResult(
                 step="detect_reduce", input_text=content, output_text=content,
                 changed=False,
-                metadata={"ai_score_before": ai_score, "threshold": threshold,
+                metadata={"ai_score_before": ai_rate, "threshold": threshold,
                           "reduction_applied": False},
             )
 
         # 需要降重
-        logger.info("AI率 %.1f%% 超过阈值 %.1f%%, 开始降重", ai_score * 100, threshold * 100)
+        logger.info("AI率 %.1f%% 超过阈值 %.1f%%, 开始降重", ai_rate * 100, threshold * 100)
         deai_result = await self.deai(content, mode=mode, **kwargs)
         reduced = deai_result.output_text
 
         # 再次检测
         after_detect = await detector.detect(reduced)
-        ai_score_after = after_detect.get("ai_score", ai_score)
+        ai_rate_after = round(1.0 - after_detect.get("ai_score", human_score), 3)
 
         return StepResult(
             step="detect_reduce", input_text=content, output_text=reduced,
             changed=content != reduced,
-            metadata={"ai_score_before": ai_score, "ai_score_after": ai_score_after,
+            metadata={"ai_score_before": ai_rate, "ai_score_after": ai_rate_after,
                       "threshold": threshold, "reduction_applied": True},
         )
 
