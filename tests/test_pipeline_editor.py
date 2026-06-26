@@ -220,3 +220,75 @@ async def test_skill_builder_gate_feedback_enters_evidence():
         all_codes += [e["code"] for e in lst]
     assert any("battle_vividness" in c for c in all_codes), \
         f"门禁反馈未进入证据: {all_codes}"
+
+
+@pytest.mark.asyncio
+async def test_detect_reduce_is_paragraph_targeted_and_preserves_structure():
+    """AI降重改为逐段定点：只重写命中段、保留段落结构、报告统计降重改动."""
+    # 三段，段落数必须在降重后保持不变（不再全文盲重写打乱 \n\n 结构）
+    para0 = "他心中涌起一股莫名的情绪，不禁感到一阵复杂的悸动，仿佛整个世界都安静了下来。"
+    para1 = "桌上摆着一杯凉透的茶。"
+    para2 = "随着夜幕降临，整座城市渐渐安静，街道空无一人，只剩路灯在风里摇晃。"
+    content = para0 + "\n\n" + para1 + "\n\n" + para2
+
+    # 假检测器：para0/para2 高 AI 率（命中），para1 干净；全文也超阈值
+    class FakeDetector:
+        async def detect(self, text):
+            ai_heavy = ("心中涌起" in text) or ("夜幕降临" in text)
+            human = 0.4 if ai_heavy else 0.9  # 人类度
+            return {
+                "ai_score": human,
+                "pattern_matches": ([{"category": "情感标签化"}] if "心中涌起" in text
+                                    else [{"category": "模板开头"}] if "夜幕降临" in text else []),
+            }
+
+    class _Entry:
+        instance = FakeDetector()
+
+    # LLM 只重写被点名的段（保持段内单段、长度相近）
+    revised0 = "他说不上来是什么滋味，胸口闷了一下，屋里静得能听见自己呼吸。"
+    revised2 = "天黑下来，城市一点点安静，街上没人，路灯在风里晃。"
+    llm = ('{"revisions":[{"paragraph_index":0,"revised_text":"' + revised0 + '","applied_fixes":["情感标签化"]},'
+           '{"paragraph_index":2,"revised_text":"' + revised2 + '","applied_fixes":["模板开头"]}]}')
+
+    pe = _make_plugin(llm, [BASELINE, AFTER])
+
+    async def _get_plugin(name):
+        return _Entry()
+    pe._kernel.get_plugin = _get_plugin
+
+    step = await pe._detect_reduce(content, "fanqie", ai_threshold=0.2)
+
+    # 结构保留：段落数不变
+    assert step["optimized"].count("\n\n") == content.count("\n\n"), "降重不得改变段落数"
+    assert step["reduction_applied"] is True
+    # 干净的 para1 原样保留
+    assert para1 in step["optimized"]
+    # 命中段被改写
+    assert revised0 in step["optimized"] and revised2 in step["optimized"]
+    # 每段改动带证据
+    assert len(step["changes"]) == 2
+    for ch in step["changes"]:
+        assert ch["evidence"], "降重改动必须带证据"
+        assert ch["evidence"][0]["source"] == "AI检测降重"
+
+
+@pytest.mark.asyncio
+async def test_report_counts_reduce_changes_no_false_unchanged():
+    """降重改了内容时，报告 n_changed 必须>0，不再出现'内容大变却说未改动'."""
+    evidence = {
+        "baseline_report": BASELINE,
+        "_rewrite_changes": [],  # 定点改写阶段没改
+        "_detect_changes": [{    # 但降重阶段改了一段
+            "paragraph_index": 0, "before": "旧段", "after": "新段",
+            "applied_fixes": ["情感标签化"],
+            "evidence": [{"code": "anti_ai.detect", "source": "AI检测降重",
+                          "message": "本段AI率 70%", "suggestion": "重写消除AI腔"}],
+        }],
+    }
+    report = PipelineEditorPlugin()._build_grounded_report(
+        evidence, AFTER, "原文", "优化后",
+    )
+    assert "未发现需修改段落" not in report["summary"], "降重改了内容不应说未改动"
+    assert report["changes"], "应统计到降重改动"
+    assert report["changes"][0]["evidence_source"] == "AI检测降重"

@@ -45,6 +45,24 @@ REWRITE_SYSTEM = """你是一位资深网文编辑。下面给你若干「有问
 
 没问题或无需改动的段落，不要出现在 revisions 里。"""
 
+# AI 降重定点改写提示 — 同样逐段、保结构，只针对命中 AI 痕迹的段落
+REDUCE_SYSTEM = """你是中文小说去AI痕迹专家。下面给你若干「AI痕迹偏重的段落」及每段命中的具体AI模式。\
+你的任务是只重写这些段落，消除AI腔，让它读起来像人写的。
+
+## 铁律
+- 只改给你的段落，逐段返回；不要新增/合并/拆分段落，不要触碰没给你的内容。
+- 每段重写后字数与原段相近（±20% 以内）。
+- 保持剧情、人物、关键信息不变。删AI腔的同时不要引入新AI味（不堆排比、\
+不加"心中涌起/不禁"类情感标签、不用"在…中/随着…/当…时"模板开头）。
+- 手法：书面语→口语动作、情感标签→具体生理反应/动作、整齐句式→长短打散、\
+模板比喻→具体细节。保留至少一处"毛边"（人才会写的不完美细节）。
+- 在 applied_fixes 里回填你实际处理了哪些AI模式。
+
+## 输出格式（严格 JSON，不要用代码块包裹）
+{"revisions":[{"paragraph_index":0,"revised_text":"重写后的该段完整文本","applied_fixes":["命中的AI模式"]}]}
+
+没问题的段落不要出现在 revisions 里。"""
+
 # 十维维度中文名（报告与提示词共用）
 DIM_NAMES = {
     "hook_strength": "开篇吸引力", "character_depth": "人物塑造",
@@ -184,6 +202,7 @@ class PipelineEditorPlugin:
             result["steps"].append(detect_step)
             if detect_step.get("optimized") and detect_step["optimized"] != result["current_content"]:
                 result["current_content"] = detect_step["optimized"]
+                evidence["_detect_changes"] = detect_step.get("changes", [])
                 # 降重改了内容 → 再测一次拿真实终值
                 after_report = await self._safe_analyze(result["current_content"], platform, evidence["genre_tags"])
 
@@ -534,38 +553,9 @@ class PipelineEditorPlugin:
             revisions = []
 
         # 应用改写 + 护栏
-        new_paras = list(paragraphs)
-        changes: list[dict] = []
-        rejected = 0
-        for rev in revisions:
-            if not isinstance(rev, dict):
-                continue
-            idx_raw = rev.get("paragraph_index")
-            revised = rev.get("revised_text", "")
-            if not isinstance(idx_raw, int) or idx_raw < 0 or idx_raw >= len(paragraphs):
-                continue
-            idx = idx_raw
-            if idx not in para_evidence:
-                continue  # 只接受有证据的段落改动
-            orig = paragraphs[idx]
-            if not revised or revised.strip() == orig.strip():
-                continue
-            # 护栏：长度漂移 > ±25% 拒绝
-            o_len = max(len(orig.strip()), 1)
-            drift = abs(len(revised.strip()) - o_len) / o_len
-            if drift > 0.25:
-                rejected += 1
-                logger.info("改写护栏拒绝段落 %d：长度漂移 %.0f%%", idx, drift * 100)
-                continue
-            new_paras[idx] = revised.strip()
-            codes = rev.get("applied_fixes") or [e["code"] for e in para_evidence[idx]]
-            changes.append({
-                "paragraph_index": idx,
-                "before": orig.strip(),
-                "after": revised.strip(),
-                "applied_fixes": codes,
-                "evidence": para_evidence[idx],
-            })
+        new_paras, changes, rejected = self._apply_revisions(
+            paragraphs, revisions, para_evidence, require_evidence=True,
+        )
 
         optimized = "\n\n".join(new_paras)
         diff_items = self._build_diff_items(content, optimized, None)
@@ -582,6 +572,57 @@ class PipelineEditorPlugin:
             "diff_items": diff_items,
             "summary": summary,
         }
+
+    @staticmethod
+    def _apply_revisions(
+        paragraphs: list[str],
+        revisions: list,
+        allowed: dict[int, list[dict]],
+        *,
+        require_evidence: bool = True,
+    ) -> tuple[list[str], list[dict], int]:
+        """把 LLM 返回的 revisions 应用到段落，带证据校验 + 长度漂移护栏.
+
+        Returns: (new_paras, changes, rejected_count)
+            changes 每条: {paragraph_index, before, after, applied_fixes, evidence}
+        不变量：revised_text 内部换行被压平，保证一段仍是一段（不破坏 \\n\\n 结构）。
+        """
+        new_paras = list(paragraphs)
+        changes: list[dict] = []
+        rejected = 0
+        for rev in revisions:
+            if not isinstance(rev, dict):
+                continue
+            idx_raw = rev.get("paragraph_index")
+            revised = rev.get("revised_text", "")
+            if not isinstance(idx_raw, int) or idx_raw < 0 or idx_raw >= len(paragraphs):
+                continue
+            idx = idx_raw
+            if require_evidence and idx not in allowed:
+                continue  # 只接受有证据的段落改动
+            orig = paragraphs[idx]
+            # 压平段内换行，维持「一段=一段」不变量
+            revised = re.sub(r"\s*\n\s*", " ", revised).strip() if isinstance(revised, str) else ""
+            if not revised or revised == orig.strip():
+                continue
+            # 护栏：长度漂移 > ±25% 拒绝
+            o_len = max(len(orig.strip()), 1)
+            drift = abs(len(revised) - o_len) / o_len
+            if drift > 0.25:
+                rejected += 1
+                logger.info("改写护栏拒绝段落 %d：长度漂移 %.0f%%", idx, drift * 100)
+                continue
+            new_paras[idx] = revised
+            ev = allowed.get(idx, [])
+            codes = rev.get("applied_fixes") or [e.get("code", "") for e in ev]
+            changes.append({
+                "paragraph_index": idx,
+                "before": orig.strip(),
+                "after": revised,
+                "applied_fixes": codes,
+                "evidence": ev,
+            })
+        return new_paras, changes, rejected
 
     @staticmethod
     def _empty_rewrite(content: str, summary: str = "无需改动") -> dict:
@@ -601,49 +642,119 @@ class PipelineEditorPlugin:
         ai_threshold: float = 0.2, humanize_mode: str = "unified",
         prev_ai_detection: dict | None = None,
     ) -> dict:
-        """AI检测降重 — 复用前序检测结果，超标才降重."""
+        """AI检测降重 — 逐段检测命中→只对命中段落定点降重（保留段落结构）.
+
+        不再做全文盲重写：那会打乱段落结构（导致前端对齐错乱）且把文笔改差。
+        改为：① 全文 AI 率达标则跳过；② 否则逐段检测，挑出 AI 痕迹最重的段落，
+        连同命中的具体模式一次性喂给 LLM 定点重写；③ 每段带证据生成 change 记录。
+        """
+        empty = {
+            "step": "detect", "name": "AI检测降重",
+            "original": content, "optimized": content, "changes": [],
+            "ai_score_before": 0, "ai_score_after": 0, "diff_items": [],
+            "summary": "无需降重", "reduction_applied": False,
+        }
         try:
             # prev_ai_detection["ai_score"] 是人类度（越高越像人类），换算成 AI 率再比阈值
             ai_rate_before = None
             if prev_ai_detection and prev_ai_detection.get("ai_score") is not None:
                 ai_rate_before = round(1.0 - float(prev_ai_detection["ai_score"]), 3)
-
             if ai_rate_before is not None and ai_rate_before <= ai_threshold:
-                return {
-                    "step": "detect", "name": "AI检测降重",
-                    "original": content, "optimized": content,
-                    "ai_score_before": ai_rate_before, "ai_score_after": ai_rate_before,
-                    "diff_items": [],
-                    "summary": f"AI率 {ai_rate_before:.0%}，未超阈值 {ai_threshold:.0%}，无需降重",
-                    "reduction_applied": False,
-                }
+                empty["ai_score_before"] = empty["ai_score_after"] = ai_rate_before
+                empty["summary"] = f"AI率 {ai_rate_before:.0%}，未超阈值 {ai_threshold:.0%}，无需降重"
+                return empty
 
-            step_result = await self._transformer.detect_reduce(
-                content, threshold=ai_threshold, mode=humanize_mode,
+            entry = await self._kernel.get_plugin("anti-ai-detection")
+            detector = entry.instance if entry else None
+            if detector is None:
+                empty["summary"] = "anti-ai-detection 插件未加载，跳过降重"
+                return empty
+
+            # 全文实测 AI 率（无 prev 时兜底）
+            whole = await detector.detect(content)
+            ai_rate_before = round(1.0 - whole.get("ai_score", 1.0), 3)
+            if ai_rate_before <= ai_threshold:
+                empty["ai_score_before"] = empty["ai_score_after"] = ai_rate_before
+                empty["summary"] = f"AI率 {ai_rate_before:.0%}，未超阈值 {ai_threshold:.0%}，无需降重"
+                return empty
+
+            # 逐段检测，挑出 AI 痕迹段落（人类度越低越靠前），最多 6 段
+            paragraphs = content.split("\n\n")
+            scored: list[tuple[float, int, list[str]]] = []
+            for i, p in enumerate(paragraphs):
+                ps = p.strip()
+                if len(ps) < 20:  # 太短的段（单句对话/拟声）不单独降重，噪声大
+                    continue
+                pd = await detector.detect(ps)
+                p_ai = 1.0 - pd.get("ai_score", 1.0)
+                if p_ai <= ai_threshold:
+                    continue
+                hits = [m.get("category", "") for m in pd.get("pattern_matches", [])][:6]
+                scored.append((p_ai, i, hits))
+            scored.sort(reverse=True, key=lambda t: t[0])
+            targets = scored[:6]
+
+            if not targets:
+                empty["ai_score_before"] = empty["ai_score_after"] = ai_rate_before
+                empty["summary"] = f"AI率 {ai_rate_before:.0%}，但无单段超标，跳过定点降重"
+                return empty
+
+            # 组装「AI 段落 + 命中模式」块
+            ai_evidence: dict[int, list[dict]] = {}
+            blocks = []
+            for p_ai, idx, hits in targets:
+                hit_str = "、".join(h for h in hits if h) or "句式/词汇AI腔"
+                ai_evidence[idx] = [{
+                    "code": "anti_ai.detect", "source": "AI检测降重",
+                    "message": f"本段AI率 {p_ai:.0%}，命中：{hit_str}",
+                    "suggestion": "重写消除AI腔",
+                }]
+                blocks.append(
+                    f"【段落 {idx}】（AI率 {p_ai:.0%}）\n原文：{paragraphs[idx].strip()}\n命中模式：{hit_str}"
+                )
+
+            user_prompt = (f"请重写下列 AI 痕迹偏重的段落。平台: {platform}\n\n"
+                           f"## 待重写段落（共 {len(blocks)} 段）\n" + "\n\n".join(blocks)
+                           + "\n\n严格按 JSON 返回 revisions（只含你实际重写的段落）。")
+            resp = await self._kernel.call_llm(
+                [{"role": "system", "content": REDUCE_SYSTEM},
+                 {"role": "user", "content": user_prompt}],
+                tier="standard", max_tokens=8192, temperature=0.6,
+                response_format={"type": "json_object"},
             )
-            meta = step_result.metadata
-            reduced = step_result.output_text
-            diff_items = self._build_diff_items(content, reduced, None) if step_result.changed else []
+            parsed = self._parse_json_response(resp.get("content", "{}"))
+            revisions = parsed.get("revisions", []) if isinstance(parsed, dict) else (
+                parsed if isinstance(parsed, list) else [])
+
+            new_paras, changes, rejected = self._apply_revisions(
+                paragraphs, revisions, ai_evidence, require_evidence=True,
+            )
+            reduced = "\n\n".join(new_paras)
+
+            if reduced == content:
+                empty["ai_score_before"] = empty["ai_score_after"] = ai_rate_before
+                empty["summary"] = f"AI率 {ai_rate_before:.0%}，降重未产生有效改动"
+                return empty
+
+            after = await detector.detect(reduced)
+            ai_rate_after = round(1.0 - after.get("ai_score", 1.0 - ai_rate_before), 3)
+            summary = f"AI率 {ai_rate_before:.0%} → {ai_rate_after:.0%}，定点降重 {len(changes)} 段"
+            if rejected:
+                summary += f"（护栏拒绝 {rejected} 段）"
 
             return {
                 "step": "detect", "name": "AI检测降重",
-                "original": content, "optimized": reduced,
-                "ai_score_before": meta.get("ai_score_before", 0),
-                "ai_score_after": meta.get("ai_score_after", meta.get("ai_score_before", 0)),
-                "diff_items": diff_items,
-                "summary": (f"AI率 {meta.get('ai_score_before', 0):.0%} → {meta.get('ai_score_after', 0):.0%}"
-                            if step_result.changed else
-                            f"AI率 {meta.get('ai_score_before', 0):.0%}，无需降重"),
-                "reduction_applied": meta.get("reduction_applied", False),
+                "original": content, "optimized": reduced, "changes": changes,
+                "ai_score_before": ai_rate_before, "ai_score_after": ai_rate_after,
+                "diff_items": self._build_diff_items(content, reduced, None),
+                "summary": summary, "reduction_applied": True,
             }
         except Exception as e:
             logger.error("AI检测降重失败", error=str(e))
-            return {
-                "step": "detect", "name": "AI检测降重",
-                "original": content, "optimized": content,
-                "ai_score_before": 0, "ai_score_after": 0, "diff_items": [],
-                "summary": f"检测失败: {str(e)[:100]}", "error": str(e),
-            }
+            empty["summary"] = f"降重失败: {str(e)[:100]}"
+            empty["error"] = str(e)
+            return empty
+
 
     # ==================================================================
     # 报告：全部用实测值构建（不让 LLM 编分数）
@@ -684,22 +795,40 @@ class PipelineEditorPlugin:
             if av > bv:
                 improvements.append(f"{DIM_NAMES.get(k, k)} {bv}→{av}")
 
-        # 收集改写 changes（由 run_pipeline 在改写后回填到 evidence）
+        # 收集改写 changes（定点改写 + AI降重，均由 run_pipeline 回填到 evidence）
+        # 同段被两阶段都改过时，以降重后的 after 为准，证据合并
         changes: list[dict] = []
-        rewrite_changes = evidence.get("_rewrite_changes", [])
-        for ch in rewrite_changes:
-            ev_list = ch.get("evidence") or []
+        merged: dict[int, dict] = {}
+        for stage_changes in (evidence.get("_rewrite_changes", []), evidence.get("_detect_changes", [])):
+            for ch in stage_changes:
+                pi = ch.get("paragraph_index")
+                ev_list = ch.get("evidence") or []
+                if pi in merged:
+                    # 第二阶段又改了这段：更新 after 片段，累加证据
+                    merged[pi]["_after"] = ch.get("after", "") or merged[pi]["_after"]
+                    merged[pi]["_ev"].extend(ev_list)
+                    merged[pi]["_fixes"].extend(ch.get("applied_fixes") or [])
+                else:
+                    merged[pi] = {
+                        "_before": ch.get("before", "") or "",
+                        "_after": ch.get("after", "") or "",
+                        "_ev": list(ev_list),
+                        "_fixes": list(ch.get("applied_fixes") or []),
+                    }
+
+        for pi in sorted(k for k in merged if k is not None):
+            m = merged[pi]
+            ev_list = m["_ev"]
             ev0 = ev_list[0] if ev_list else {}
-            code0 = (ch.get("applied_fixes") or [ev0.get("code", "")])[0]
-            # 内联批注用：把该段所有证据拼成一句「怎么改 + 原因」
-            reasons = [e.get("message", "") for e in ev_list if e.get("message")]
+            code0 = (m["_fixes"] or [ev0.get("code", "")])[0]
+            reasons = list(dict.fromkeys(e.get("message", "") for e in ev_list if e.get("message")))
             sources = list(dict.fromkeys(e.get("source", "") for e in ev_list if e.get("source")))
             changes.append({
-                "paragraph_index": ch.get("paragraph_index"),
-                "original_snippet": (ch.get("before", "") or "")[:60],
-                "optimized_snippet": (ch.get("after", "") or "")[:60],
+                "paragraph_index": pi,
+                "original_snippet": (m["_before"])[:60],
+                "optimized_snippet": (m["_after"])[:60],
                 "reason": "；".join(reasons) if reasons else "按证据修改",
-                "evidence_source": "、".join(sources),
+                "evidence_source": "、".join(s for s in sources if s),
                 "evidence": [
                     {"source": e.get("source", ""), "message": e.get("message", ""),
                      "suggestion": e.get("suggestion", ""), "code": e.get("code", "")}
@@ -709,7 +838,7 @@ class PipelineEditorPlugin:
             })
 
         # 文字结论 — 全部基于真实数字模板化生成（不调 LLM，零幻觉）
-        n_changed = len(rewrite_changes)
+        n_changed = len(changes)
         delta = a_score - b_score
         if n_changed == 0:
             summary = f"未发现需修改段落，质量评分 {b_score} 分（{b_grade}），正文保持原样。"

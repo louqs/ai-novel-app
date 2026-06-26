@@ -143,7 +143,11 @@
       "Bash(PYTHONIOENCODING=utf-8 python -m pytest tests/test_anti_ai_reduce.py -q)",
       "Bash(./.venv/Scripts/python.exe -m pip install \"python-multipart>=0.0.18\" \"pypdf>=5.0\")",
       "Bash(./.venv/Scripts/python.exe -c \"import multipart, pypdf; print\\('multipart', multipart.__version__\\); print\\('pypdf', pypdf.__version__\\)\")",
-      "Bash(./.venv/Scripts/python.exe -c \"from web.backend.routes import workbench; print\\('workbench route module imported OK'\\)\")"
+      "Bash(./.venv/Scripts/python.exe -c \"from web.backend.routes import workbench; print\\('workbench route module imported OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('plugins/pipeline_editor/plugin.py',encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_pipeline_editor.py tests/test_anti_ai_reduce.py -q)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_pipeline_editor.py -q)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/ -q -m smoke)"
     ]
   }
 }

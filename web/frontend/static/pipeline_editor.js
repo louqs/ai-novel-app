@@ -6,6 +6,7 @@ var peState = {
     volumeNum: 1,
     stepsResult: null,
     currentContent: '',
+    compareOriginal: '',
     batchChapters: [],
     batchRunning: false,
     batchCancelled: false,
@@ -323,6 +324,7 @@ function peShowResult(result) {
     peState.currentContent = result.current_content || '';
     var original = result.original || '';
     var optimized = result.current_content || '';
+    peState.compareOriginal = original;  // 对比基线：朱雀降重后重渲染用，避免抓 DOM
 
     // 记录当前展示的章节（批量结果带 _chapterNum；单章走 peState 已有值）
     if (result._chapterNum) {
@@ -363,42 +365,93 @@ function peShowResult(result) {
     }
 }
 
-// ===== 双栏对齐渲染（原文 / 优化版，同索引 data-pi，点击互相导航）=====
+// ===== 双栏对齐渲染（LCS 段落对齐：相同段配对，不同段标增删；同 data-pi 互导航）=====
 function peRenderAlignedColumns(original, optimized, annotMap) {
-    var origParas = original.split(/\n\n+/);
-    var optParas = optimized.split(/\n\n+/);
-    var maxLen = Math.max(origParas.length, optParas.length);
+    var origParas = original.split(/\n\n+/).map(function(s){return s.trim();}).filter(function(s){return s.length;});
+    var optParas = optimized.split(/\n\n+/).map(function(s){return s.trim();}).filter(function(s){return s.length;});
+
+    // LCS 对齐：以"完全相同的段落"为锚点配对，锚点之间的差异段按位配对/标增删
+    var rows = peAlignParas(origParas, optParas); // [{op, np, oi}]，oi=原文段索引（用于查 annotMap）
     var origHtml = '', optHtml = '';
 
-    for (var i = 0; i < maxLen; i++) {
-        var op = (origParas[i] || '').trim();
-        var np = (optParas[i] || '').trim();
+    rows.forEach(function(row, pi) {
+        var op = row.op, np = row.np;
         var changed = op !== np;
         var cls = 'pe-para' + (changed ? ' changed' : '');
+        var navAttr = ' data-pi="' + pi + '" onclick="peNavTo(' + pi + ')"';
 
-        // 原文栏
-        origHtml += '<div class="' + cls + '" data-pi="' + i + '" onclick="peNavTo(' + i + ')">' + (esc(op) || '&nbsp;') + '</div>';
-
-        // 优化版栏：正文（字符 diff）+ 内联批注（独立节点，不进正文）
-        var bodyHtml;
-        if (!changed) {
-            bodyHtml = esc(np) || '&nbsp;';
-        } else if (!op && np) {
-            bodyHtml = '<span class="diff-label">新增段落</span><span class="diff-line-add">' + esc(np) + '</span>';
-        } else if (op && !np) {
-            bodyHtml = '<span class="diff-label">删除段落</span><span class="diff-line-del">' + esc(op) + '</span>';
+        // 原文栏（空段用占位，保持两栏行对齐）
+        if (op === null) {
+            origHtml += '<div class="pe-para pe-para-empty" data-pi="' + pi + '">&nbsp;</div>';
         } else {
-            bodyHtml = peCharDiff(op, np);
+            origHtml += '<div class="' + cls + '"' + navAttr + '>' + (esc(op) || '&nbsp;') + '</div>';
         }
-        optHtml += '<div class="' + cls + '" data-pi="' + i + '" onclick="peNavTo(' + i + ')">';
-        optHtml += '<div class="pe-para-body">' + bodyHtml + '</div>';
-        if (changed && annotMap[i]) {
-            optHtml += peAnnotHtml(annotMap[i]);
+
+        // 优化版栏
+        if (np === null) {
+            // 原文有、优化版无 → 整段被删
+            optHtml += '<div class="pe-para changed pe-para-empty"' + navAttr + '><span class="diff-label">删除段落</span></div>';
+        } else {
+            var bodyHtml;
+            if (!changed) {
+                bodyHtml = esc(np) || '&nbsp;';
+            } else if (op === null) {
+                bodyHtml = '<span class="diff-label">新增段落</span><span class="diff-line-add">' + esc(np) + '</span>';
+            } else {
+                bodyHtml = peCharDiff(op, np);
+            }
+            optHtml += '<div class="' + cls + '"' + navAttr + '>';
+            optHtml += '<div class="pe-para-body">' + bodyHtml + '</div>';
+            // 批注按原文段索引 oi 查（后端 paragraph_index 是原文坐标）
+            if (changed && row.oi != null && annotMap[row.oi]) {
+                optHtml += peAnnotHtml(annotMap[row.oi]);
+            }
+            optHtml += '</div>';
         }
-        optHtml += '</div>';
-    }
+    });
     document.getElementById('pe-col-orig').innerHTML = origHtml;
     document.getElementById('pe-col-opt').innerHTML = optHtml;
+}
+
+// LCS 段落对齐：返回行数组 [{op, np, oi}]
+// op/np 为 null 表示该侧无对应段（增/删）；oi 为原文段索引（用于批注定位）
+// 锚点(完全相同的段)之间的删块与增块按位配对成"改"，多出的部分单边显示。
+function peAlignParas(a, b) {
+    var n = a.length, m = b.length;
+    var dp = [];
+    for (var i = 0; i <= n; i++) { dp.push(new Array(m + 1).fill(0)); }
+    for (var i = n - 1; i >= 0; i--) {
+        for (var j = m - 1; j >= 0; j--) {
+            dp[i][j] = (a[i] === b[j]) ? dp[i+1][j+1] + 1 : Math.max(dp[i+1][j], dp[i][j+1]);
+        }
+    }
+    var rows = [];
+    var delBuf = [], addBuf = [];  // delBuf: [{text,oi}]，addBuf: [text]
+    function flush() {
+        var k = Math.max(delBuf.length, addBuf.length);
+        for (var t = 0; t < k; t++) {
+            var d = t < delBuf.length ? delBuf[t] : null;
+            var ad = t < addBuf.length ? addBuf[t] : null;
+            rows.push({ op: d ? d.text : null, np: (ad != null ? ad : null), oi: d ? d.oi : null });
+        }
+        delBuf = []; addBuf = [];
+    }
+    var i = 0, j = 0;
+    while (i < n && j < m) {
+        if (a[i] === b[j]) {
+            flush();
+            rows.push({ op: a[i], np: b[j], oi: i });
+            i++; j++;
+        } else if (dp[i+1][j] >= dp[i][j+1]) {
+            delBuf.push({ text: a[i], oi: i }); i++;
+        } else {
+            addBuf.push(b[j]); j++;
+        }
+    }
+    while (i < n) { delBuf.push({ text: a[i], oi: i }); i++; }
+    while (j < m) { addBuf.push(b[j]); j++; }
+    flush();
+    return rows;
 }
 
 // 内联批注节点（独立 DOM，复制/保存读 state 不受影响）
@@ -667,7 +720,7 @@ async function peZhuqueReduce() {
                     if (ch.paragraph_index !== null && ch.paragraph_index !== undefined) annotMap[ch.paragraph_index] = ch;
                 });
             }
-            peRenderAlignedColumns(document.getElementById('pe-col-orig').innerText, data.reduced_text, annotMap);
+            peRenderAlignedColumns(peState.compareOriginal || '', data.reduced_text, annotMap);
             document.getElementById('pe-opt-count').textContent = data.reduced_text.length + ' 字';
             toast('降重完成，可再次导出去朱雀验证', 'success');
         } else {
@@ -730,7 +783,7 @@ async function peZhuqueImport(input) {
                     if (ch.paragraph_index !== null && ch.paragraph_index !== undefined) annotMap[ch.paragraph_index] = ch;
                 });
             }
-            peRenderAlignedColumns(document.getElementById('pe-col-orig').innerText, data.reduction.reduced_text, annotMap);
+            peRenderAlignedColumns(peState.compareOriginal || '', data.reduction.reduced_text, annotMap);
             document.getElementById('pe-opt-count').textContent = data.reduction.reduced_text.length + ' 字';
             toast('报告已解析，降重完成', 'success');
         } else {
