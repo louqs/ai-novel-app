@@ -91,10 +91,11 @@
             </div>
             <div class="form-group">
                 <label>篇幅</label>
-                <select id="edit-length" style="width:100%">
+                <select id="edit-length" style="width:100%" onchange="updateEditWordRange()">
                     <option value="short">短篇</option>
                     <option value="medium">中篇</option>
                     <option value="long">长篇</option>
+                    <option value="extra_long">超长篇</option>
                 </select>
             </div>
         </div>

@@ -65,6 +65,12 @@ async function createProject(e) {
 
 var _editProjectId = null;
 var _lengthWordBounds = {short:{min:10000,max:50000}, medium:{min:50000,max:150000}, long:{min:150000,max:500000}, extra_long:{min:500000,max:7000000}};
+// 编辑弹窗中切换「篇幅」时，同步刷新字数区间为该篇幅的默认值
+function updateEditWordRange() {
+    var bounds = _lengthWordBounds[document.getElementById('edit-length').value] || _lengthWordBounds.medium;
+    document.getElementById('edit-min-words').value = bounds.min;
+    document.getElementById('edit-max-words').value = bounds.max;
+}
 async function editProject(pid) {
     _editProjectId = pid;
     try {

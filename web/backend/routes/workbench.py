@@ -479,6 +479,101 @@ async def run_optimize_pipeline(project_id: str, data: dict):
         raise HTTPException(status_code=500, detail=f"流水线执行失败: {str(e)[:200]}")
 
 
+@router.post("/api/v1/projects/{project_id}/pipeline/optimize-stream")
+async def optimize_stream(project_id: str, data: dict):
+    """SSE 流式优化：逐步推送进度 + 最终结果.
+
+    body: 同 /pipeline/optimize
+    返回 text/event-stream，每行 data: {"type":"progress","msg":"...","pct":0.3}
+    最后一行 data: {"type":"result","data":{...}}
+    """
+    from starlette.responses import StreamingResponse
+
+    kernel = await get_kernel()
+    ch_num = data.get("chapter_num", 0)
+    vol_num = data.get("volume_number", 1)
+    steps = data.get("steps", ["annotate", "coach", "detect"])
+    ai_threshold = data.get("ai_threshold", 0.15)
+    humanize_mode = data.get("humanize_mode", "unified")
+
+    if not ch_num:
+        raise HTTPException(status_code=400, detail="需要 chapter_num")
+
+    # 获取章节内容（同 optimize 端点逻辑）
+    chapter_id = f"ch_v{vol_num:02d}_{ch_num:04d}"
+    content = ""
+    if kernel.db:
+        ch = await kernel.db.get_chapter(project_id, ch_num, vol_num)
+        if ch:
+            content = ch.get("content", "")
+    if not content:
+        try:
+            content = await kernel.read_project_file(project_id, f"chapters/{chapter_id}.md")
+        except FileNotFoundError:
+            pass
+    if not content:
+        raise HTTPException(status_code=404, detail=f"章节 {chapter_id} 不存在或内容为空")
+
+    platform = await kernel.context().get(f"project:{project_id}", "platform", "fanqie")
+    gate_issues = []
+    try:
+        from web.backend.routes.stream import _chapter_jobs
+        job = _chapter_jobs.get(f"{project_id}:v{vol_num}:ch{ch_num}")
+        if job:
+            gate_issues = job.get("gate_issues", [])
+    except Exception:
+        pass
+    if not gate_issues and kernel.db:
+        try:
+            gate_issues = await kernel.db.get_gate_results(project_id, ch_num, vol_num)
+        except Exception:
+            pass
+
+    async def event_generator():
+        import asyncio
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_progress(msg: str, pct: float) -> None:
+            await queue.put({"type": "progress", "msg": msg, "pct": round(pct, 2)})
+
+        async def run_and_send():
+            try:
+                plugin = await kernel.get_plugin("pipeline-editor")
+                result = await plugin.instance.run_pipeline(
+                    content=content, project_id=project_id,
+                    chapter_num=ch_num, platform=platform,
+                    steps=steps, volume_number=vol_num,
+                    ai_threshold=ai_threshold, humanize_mode=humanize_mode,
+                    gate_issues=gate_issues, _on_progress=on_progress,
+                )
+                if kernel.db and result.get("current_content"):
+                    try:
+                        await kernel.db.save_optimization_result(
+                            project_id, ch_num, vol_num,
+                            result.get("original", content),
+                            result.get("current_content", ""),
+                            result.get("explanation"),
+                        )
+                    except Exception:
+                        pass
+                await queue.put({"type": "result", "data": result})
+            except Exception as e:
+                await queue.put({"type": "error", "msg": str(e)[:200]})
+
+        task = asyncio.create_task(run_and_send())
+        while True:
+            item = await queue.get()
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            if item.get("type") in ("result", "error"):
+                break
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.post("/api/v1/pipeline/optimize-text", response_model=dict)
 async def optimize_text(data: dict):
     """对纯文本执行优化流水线（不绑定项目）.
@@ -827,6 +922,70 @@ async def get_optimization_result(project_id: str, ch_num: int, volume: int = 1)
         result["found"] = True
         return result
     return {"found": False}
+
+
+@router.get("/api/v1/projects/{project_id}/pipeline/aggregate")
+async def get_aggregate_report(project_id: str):
+    """获取项目级聚合优化报告（各章评分/AI率/问题数汇总，最差章置顶）."""
+    kernel = await get_kernel()
+    if not kernel.db:
+        raise HTTPException(status_code=400, detail="数据库不可用")
+
+    results = await kernel.db.list_optimization_results(project_id)
+    if not results:
+        return {"chapters": [], "summary": {"total": 0, "avg_score": 0, "avg_ai_rate": 0}}
+
+    chapters = []
+    total_score, total_ai_rate, count_score, count_ai = 0, 0, 0, 0
+
+    for r in results:
+        explanation = r.get("explanation") or {}
+        quality_after = explanation.get("quality_after") or {}
+        ai_detection = explanation.get("quality_after", {}).get("ai_detection") or {}
+
+        # 优化后评分（0-100）
+        score = quality_after.get("score", 0)
+        grade = quality_after.get("grade", "?")
+
+        # AI率：1 - human_score（explanation 里存的是 ai_detection，取人类度换算成AI率）
+        ai_score_human = ai_detection.get("ai_score")
+        ai_rate = round((1.0 - ai_score_human) * 100, 1) if isinstance(ai_score_human, (int, float)) else None
+
+        # 问题数（优化后剩余的 issues）
+        issues = quality_after.get("issues") or []
+        issue_count = len(issues)
+
+        chapters.append({
+            "chapter_number": r["chapter_number"],
+            "volume_number": r["volume_number"],
+            "score": score,
+            "grade": grade,
+            "ai_rate": ai_rate,
+            "issue_count": issue_count,
+            "created_at": r["created_at"],
+        })
+
+        if score > 0:
+            total_score += score
+            count_score += 1
+        if ai_rate is not None:
+            total_ai_rate += ai_rate
+            count_ai += 1
+
+    # 按评分升序（最差章在前）
+    chapters.sort(key=lambda c: (c["score"] or 0, -(c["ai_rate"] or 0)))
+
+    avg_score = round(total_score / count_score, 1) if count_score > 0 else 0
+    avg_ai_rate = round(total_ai_rate / count_ai, 1) if count_ai > 0 else 0
+
+    return {
+        "chapters": chapters,
+        "summary": {
+            "total": len(chapters),
+            "avg_score": avg_score,
+            "avg_ai_rate": avg_ai_rate,
+        }
+    }
 
 
 # =============================================================================

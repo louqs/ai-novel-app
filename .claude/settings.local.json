@@ -148,7 +148,16 @@
       "Bash(./.venv/Scripts/python.exe -m pytest tests/test_pipeline_editor.py tests/test_anti_ai_reduce.py -q)",
       "Bash(./.venv/Scripts/python.exe -m pytest tests/test_pipeline_editor.py -q)",
       "Bash(./.venv/Scripts/python.exe -m pytest tests/ -q -m smoke)",
-      "Bash(./.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('plugins/pipeline_editor/plugin.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('web/backend/routes/workbench.py',encoding='utf-8'\\).read\\(\\)\\); print\\('py syntax OK'\\)\")"
+      "Bash(./.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('plugins/pipeline_editor/plugin.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('web/backend/routes/workbench.py',encoding='utf-8'\\).read\\(\\)\\); print\\('py syntax OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('web/backend/routes/generation.py',encoding='utf-8'\\).read\\(\\)\\); print\\('generation.py OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_pipeline_editor.py -v)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/ -v -m smoke --tb=short)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_cross_chapter_features.py -v)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_pipeline_editor.py tests/test_cross_chapter_features.py -v --tb=short)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_pipeline_editor.py -v --tb=short)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/ -m smoke --tb=short)",
+      "Bash(./.venv/Scripts/python.exe -c \"from plugins.pipeline_editor import plugin; from web.backend.routes import workbench; print\\('imports OK'\\)\")",
+      "Bash(node *)"
     ]
   }
 }

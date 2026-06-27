@@ -51,7 +51,7 @@ REDUCE_SYSTEM = """你是中文小说去AI痕迹专家。下面给你若干「AI
 
 ## 铁律
 - 只改给你的段落，逐段返回；不要新增/合并/拆分段落，不要触碰没给你的内容。
-- 每段重写后字数与原段相近（±20% 以内）。
+- 每段重写后字数控制在原段的 65%~135% 范围内（可以大幅精简废话，但不要缩写到失去关键信息）。
 - 保持剧情、人物、关键信息不变。删AI腔的同时不要引入新AI味（不堆排比、\
 不加"心中涌起/不禁"类情感标签、不用"在…中/随着…/当…时"模板开头）。
 - 手法：书面语→口语动作、情感标签→具体生理反应/动作、整齐句式→长短打散、\
@@ -142,6 +142,7 @@ class PipelineEditorPlugin:
         ai_threshold: float = 0.2,
         humanize_mode: str = "unified",
         gate_issues: list[dict] | None = None,
+        _on_progress: Any = None,
     ) -> dict:
         """执行证据驱动优化流水线.
 
@@ -164,19 +165,30 @@ class PipelineEditorPlugin:
             "steps": [],
         }
 
+        async def _progress(msg: str, pct: float = 0) -> None:
+            if _on_progress:
+                await _on_progress(msg, pct)
+
         # ---- 阶段 1：收集证据（含门禁 / 贡献者 / 分析器实测基线）----
+        await _progress("① 收集证据：规则预检 + AI检测 + 一致性/伏笔校验...", 0.05)
         evidence = await self._collect_evidence(
             content, project_id, chapter_num, platform,
             volume_number=volume_number, gate_issues=gate_issues,
         )
         result["steps"].append(evidence["step_record"])
+        n_para = len(evidence["para_evidence"])
+        n_ch = len(evidence["chapter_evidence"])
+        await _progress(f"① 证据收集完成：定位 {n_para} 段问题，{n_ch} 条章节级建议", 0.3)
 
         # ---- 阶段 2：定点改写 ----
+        await _progress("② 定点改写：对问题段落逐段交给AI编辑...", 0.35)
         if do_rewrite and evidence["para_evidence"]:
             rewrite_step = await self._rewrite_paragraphs(content, platform, evidence)
             result["steps"].append(rewrite_step)
             result["current_content"] = rewrite_step.get("optimized", content)
             evidence["_rewrite_changes"] = rewrite_step.get("changes", [])
+            n_changed = len(rewrite_step.get("changes", []))
+            await _progress(f"② 定点改写完成：修改了 {n_changed} 段", 0.6)
         elif do_rewrite:
             result["steps"].append({
                 "step": "coach", "name": "定点改写",
@@ -184,11 +196,12 @@ class PipelineEditorPlugin:
                 "changes": [], "diff_items": [],
                 "summary": "未发现需要修改的段落，正文保持原样",
             })
+            await _progress("② 无需定点改写，跳过", 0.6)
 
         # ---- 阶段 3：重测 + 条件降重 ----
+        await _progress("③ AI检测：重测质量评分 + 判断是否需要降重...", 0.65)
         after_report: dict[str, Any] = {}
         if result["current_content"] != content:
-            # 内容有改动才值得重测
             after_report = await self._safe_analyze(result["current_content"], platform, evidence["genre_tags"])
         else:
             after_report = evidence["baseline_report"]
@@ -205,8 +218,14 @@ class PipelineEditorPlugin:
                 evidence["_detect_changes"] = detect_step.get("changes", [])
                 # 降重改了内容 → 再测一次拿真实终值
                 after_report = await self._safe_analyze(result["current_content"], platform, evidence["genre_tags"])
+                await _progress(f"③ AI降重完成：{detect_step.get('summary', '')}", 0.9)
+            else:
+                await _progress(f"③ AI检测完成：{detect_step.get('summary', '无需降重')}", 0.9)
+        else:
+            await _progress("③ 跳过AI检测", 0.9)
 
         # ---- 用实测值构建报告（不再让 LLM 编分数）----
+        await _progress("生成优化报告...", 0.95)
         result["explanation"] = self._build_grounded_report(
             evidence, after_report, result["original"], result["current_content"]
         )
@@ -260,7 +279,25 @@ class PipelineEditorPlugin:
         # ---- 1b. 项目 / 体裁上下文 + 规则基线 ----
         context_info, genre_tags = await self._build_context_info(project_id)
 
-        # ---- 1c. 门禁链（含 skill builder 的 IQualityGate 插件）----
+        # ---- 1c. 跨章相似度检测（仅在项目模式 + 有 DB 时启用）----
+        if project_id and chapter_num > 1 and self._kernel and self._kernel.db:
+            try:
+                from core.similarity_checker import check_cross_chapter_similarity
+                sim_issues = check_cross_chapter_similarity(
+                    content, project_id, chapter_num, self._kernel.db,
+                    lookback_n=5, threshold=0.25, shingle_n=5,
+                )
+                for si in sim_issues:
+                    add_para(si["paragraph_index"], {
+                        "code": f"cross_chapter_similarity.ch{si['similar_chapter']}",
+                        "source": "跨章相似度",
+                        "message": si["message"],
+                        "suggestion": f"本段与第 {si['similar_chapter']} 章重复度 {si['score']:.0%}，建议重写或删减",
+                    })
+            except Exception as e:
+                logger.warning("跨章相似度检测失败", error=str(e))
+
+        # ---- 1d. 门禁链（含 skill builder 的 IQualityGate 插件）----
         if self._kernel:
             if not gate_issues and project_id and self._kernel.db:
                 with contextlib.suppress(Exception):
@@ -323,19 +360,76 @@ class PipelineEditorPlugin:
             else:
                 chapter_evidence.append(ev)
 
-        # ---- 1f. 深度精修兜底 ----
-        # 没有任何段落级证据，但十维有低分项或教练有建议 → 不能放过，挑最相关的段挂证据
+        # ---- 1f. 跨章一致性/伏笔校验（项目模式 + 有完整上下文时）----
+        if project_id and chapter_num > 0 and self._kernel:
+            try:
+                # 获取全书事实账本和伏笔状态
+                project_ns = f"project:{project_id}"
+                facts_data = await self._kernel.context().get(project_ns, "facts", {})
+                foreshadows_data = await self._kernel.context().get(project_ns, "foreshadows", {})
+                settings_data = await self._kernel.context().get(project_ns, "settings", {})
+                characters_data = await self._kernel.context().get(project_ns, "characters", {})
+
+                # 一致性检查（跨章校验事实冲突）
+                cc_entry = await self._kernel.get_plugin("consistency-checker")
+                if cc_entry and cc_entry.instance:
+                    cc_result = await cc_entry.instance.evaluate(
+                        {"content": content, "chapter_id": f"ch_{chapter_num}", "chapter_number": chapter_num},
+                        {"facts": facts_data, "settings": settings_data, "characters": characters_data, "project_id": project_id}
+                    )
+                    for issue in cc_result.issues:
+                        # 一致性问题通常是章节级（人物位置矛盾、设定冲突等），不绑定具体段落
+                        chapter_evidence.append({
+                            "code": issue.code,
+                            "source": "一致性校验",
+                            "message": issue.message,
+                            "suggestion": issue.suggestion or "",
+                        })
+
+                # 伏笔检查（超期未推进、未授权废弃）
+                fm_entry = await self._kernel.get_plugin("foreshadow-manager")
+                if fm_entry and fm_entry.instance:
+                    fm_result = await fm_entry.instance.evaluate(
+                        {"content": content, "chapter_number": chapter_num},
+                        {"foreshadows": foreshadows_data, "settings": settings_data}
+                    )
+                    for issue in fm_result.issues:
+                        chapter_evidence.append({
+                            "code": issue.code,
+                            "source": "伏笔管理",
+                            "message": issue.message,
+                            "suggestion": issue.suggestion or "",
+                        })
+            except Exception as e:
+                logger.warning("跨章一致性/伏笔校验失败", error=str(e))
+
+        # ---- 1g. 章节级证据锚定（A）+ 深度精修（B）----
+        # A：把无段落坐标的章节级证据尽量锚到具体段落，转为可改证据。
+        #    锚不上的（纯结构性问题，如"整章节奏偏慢"）保留在 chapter_evidence，
+        #    在报告里诚实标为"需人工"，不混进"已发现问题"假装没干活。
+        anchored_chapter_evidence: list[dict] = []
+        for ev in chapter_evidence:
+            idx = self._anchor_chapter_evidence(paragraphs, ev)
+            if idx is not None:
+                add_para(idx, {**ev, "_from_chapter": True})
+            else:
+                anchored_chapter_evidence.append(ev)
+        chapter_evidence = anchored_chapter_evidence
+
+        # B：十维低分维度 / 教练建议 → 总是合并为可改证据（不再被任意段落证据挡住）。
+        #    去重：同一段已有同 code 证据则不重复挂。
         deep_polish = False
-        if not para_evidence:
-            deep_ev = self._deep_polish_evidence(paragraphs, baseline_report)
-            for idx, ev in deep_ev:
+        deep_ev = self._deep_polish_evidence(paragraphs, baseline_report)
+        for idx, ev in deep_ev:
+            existing_codes = {e.get("code") for e in para_evidence.get(idx, [])}
+            if ev.get("code") not in existing_codes:
                 add_para(idx, ev)
-            deep_polish = bool(deep_ev)
+                deep_polish = True
 
         # ---- 组装 step 记录 ----
         total_para_issues = sum(len(v) for v in para_evidence.values())
         summary = (f"定位到 {len(para_evidence)} 段共 {total_para_issues} 处问题"
-                   f"，章节级 {len(chapter_evidence)} 条")
+                   f"，章节级（需人工）{len(chapter_evidence)} 条")
         if deep_polish:
             summary += "（深度精修：依十维低分项挑段精修）"
         step_record = {
@@ -366,9 +460,9 @@ class PipelineEditorPlugin:
         从 hint 中抽取被引号/书名号包裹的词，或冒号后的片段，逐段 substring 查找。
         找不到返回 None（→ 归为章节级证据）。
         """
+        # 抽取候选定位词：引号内、书名号内、或冒号之后的片段
         if not hint:
             return None
-        # 抽取候选定位词：引号内、书名号内、或冒号之后的片段
         cands: list[str] = []
         _open = "「『“‘’"   # 「 『 " ' '
         _close = "」』”‘’"  # 」 』 " ' '
@@ -384,6 +478,40 @@ class PipelineEditorPlugin:
                 if cand and cand in para:
                     return idx
         return None
+
+    # 能靠"定点改写单段"解决的章节级问题 code 前缀 → 兜底锚定目标位置。
+    # 不在此表内的（一致性冲突、整章节奏等结构性问题）不硬锚，留给人工。
+    _ANCHORABLE_CHAPTER_CODES = ("anti_ai", "ai_taste", "style", "foreshadow")
+
+    def _anchor_chapter_evidence(self, paragraphs: list[str], ev: dict) -> int | None:
+        """把无段落坐标的章节级证据尽量锚到具体段落（A）.
+
+        策略：① 先用引文/命中词在正文里精确定位；② 定位不到时，仅对
+        "可定点改写"类型（AI腔/风格/伏笔回收）按问题语义兜底挑段：
+            伏笔/章尾钩子 → 末段；开篇 → 首段；其余 → 最长段。
+        纯结构性问题（一致性、整体节奏、未列入白名单）返回 None，保留为需人工。
+        """
+        # ① 精确定位：引文/命中词
+        idx = self._locate_evidence(paragraphs, ev.get("suggestion", "")) \
+            or self._locate_evidence(paragraphs, ev.get("message", ""))
+        if idx is not None:
+            return idx
+
+        # ② 类型白名单兜底
+        code = (ev.get("code") or "").lower()
+        if not any(code.startswith(p) or p in code for p in self._ANCHORABLE_CHAPTER_CODES):
+            return None
+
+        idxs = [i for i, p in enumerate(paragraphs) if p.strip()]
+        if not idxs:
+            return None
+        text = f"{code} {ev.get('message', '')} {ev.get('suggestion', '')}"
+        if "foreshadow" in code or "钩子" in text or "章尾" in text or "结尾" in text:
+            return idxs[-1]
+        if "开篇" in text or "开头" in text or "首段" in text:
+            return idxs[0]
+        # 其余可改类型 → 挂最长段（最可能承载冗余AI腔）
+        return max(idxs, key=lambda i: len(paragraphs[i]))
 
     @staticmethod
     def _deep_polish_evidence(paragraphs: list[str], baseline_report: dict) -> list[tuple[int, dict]]:
@@ -580,8 +708,13 @@ class PipelineEditorPlugin:
         allowed: dict[int, list[dict]],
         *,
         require_evidence: bool = True,
+        drift_limit: float = 0.25,
     ) -> tuple[list[str], list[dict], int]:
         """把 LLM 返回的 revisions 应用到段落，带证据校验 + 长度漂移护栏.
+
+        Args:
+            drift_limit: 允许的最大长度漂移比例。定点改写默认 0.25 (±25%)，
+                         降重场景传 0.40 (±40%)，因为去 AI 腔天然会大幅删减。
 
         Returns: (new_paras, changes, rejected_count)
             changes 每条: {paragraph_index, before, after, applied_fixes, evidence}
@@ -605,10 +738,10 @@ class PipelineEditorPlugin:
             revised = re.sub(r"\s*\n\s*", " ", revised).strip() if isinstance(revised, str) else ""
             if not revised or revised == orig.strip():
                 continue
-            # 护栏：长度漂移 > ±25% 拒绝
+            # 护栏：长度漂移超阈值拒绝（定点改写 25%，降重 40%）
             o_len = max(len(orig.strip()), 1)
             drift = abs(len(revised) - o_len) / o_len
-            if drift > 0.25:
+            if drift > drift_limit:
                 rejected += 1
                 logger.info("改写护栏拒绝段落 %d：长度漂移 %.0f%%", idx, drift * 100)
                 continue
@@ -736,7 +869,7 @@ class PipelineEditorPlugin:
                 parsed if isinstance(parsed, list) else [])
 
             new_paras, changes, rejected = self._apply_revisions(
-                paragraphs, revisions, ai_evidence, require_evidence=True,
+                paragraphs, revisions, ai_evidence, require_evidence=True, drift_limit=0.40,
             )
             reduced = "\n\n".join(new_paras)
 
@@ -747,7 +880,12 @@ class PipelineEditorPlugin:
 
             after = await detector.detect(reduced)
             ai_rate_after = round(1.0 - after.get("ai_score", 1.0 - ai_rate_before), 3)
-            summary = f"AI率 {ai_rate_before:.0%} → {ai_rate_after:.0%}，定点降重 {len(changes)} 段"
+            # 本地检测器和降重 prompt 共用同一份黑名单词，改写后可能命中新模式导致分不变
+            # → 当本地分没变时，强调"文本已改写"而非数字，引导用户去朱雀验证
+            if abs(ai_rate_after - ai_rate_before) < 0.02:
+                summary = f"定点降重 {len(changes)} 段（本地检测器评分未变，建议用朱雀验证真实效果）"
+            else:
+                summary = f"AI率 {ai_rate_before:.0%} → {ai_rate_after:.0%}，定点降重 {len(changes)} 段"
             if rejected:
                 summary += f"（护栏拒绝 {rejected} 段）"
 
@@ -849,23 +987,57 @@ class PipelineEditorPlugin:
         # 文字结论 — 全部基于真实数字模板化生成（不调 LLM，零幻觉）
         n_changed = len(changes)
         delta = a_score - b_score
+
+        # C：未被本次改写处理的章节级问题 → 单列"需人工"，不混进"已发现问题"假装没干活。
+        #    这些是 _anchor_chapter_evidence 锚不上的结构性问题（一致性冲突、整章节奏等）。
+        pending_manual = [
+            {
+                "source": e.get("source", ""),
+                "message": e.get("message", ""),
+                "suggestion": e.get("suggestion", ""),
+                "code": e.get("code", ""),
+            }
+            for e in evidence.get("chapter_evidence", [])
+            if e.get("message")
+        ]
+        # 已被改写处理掉的问题 message 集合（用于从"发现的问题"里剔除，避免重复展示）
+        handled_msgs: set[str] = set()
+        for ch in changes:
+            for e in ch.get("evidence", []):
+                if e.get("message"):
+                    handled_msgs.add(e["message"])
+        # quality_before.issues 只保留"既没被改写处理、也不在需人工清单"的问题
+        pending_msgs = {p["message"] for p in pending_manual}
+        unhandled_issues = [
+            m for m in before_issues if m and m not in handled_msgs and m not in pending_msgs
+        ]
+
         if n_changed == 0:
-            summary = f"未发现需修改段落，质量评分 {b_score} 分（{b_grade}），正文保持原样。"
-            comparison = "本次未做改动，原文已达当前规则基线。"
-            recommendation = "保留原文。"
+            if pending_manual:
+                summary = (f"未发现可自动定点修改的段落，但有 {len(pending_manual)} 项结构性问题需人工处理；"
+                           f"质量评分 {b_score} 分（{b_grade}）。")
+                comparison = "本次自动改写未触发，结构性问题（见'需人工处理'）建议人工复核。"
+                recommendation = "请查看'需人工处理'清单后手动调整。"
+            else:
+                summary = f"未发现需修改段落，质量评分 {b_score} 分（{b_grade}），正文保持原样。"
+                comparison = "本次未做改动，原文已达当前规则基线。"
+                recommendation = "保留原文。"
         else:
             trend = f"提升 {delta} 分" if delta > 0 else (f"下降 {abs(delta)} 分" if delta < 0 else "评分持平")
             summary = (f"基于规则/门禁/AI检测的真实命中，定点修改 {n_changed} 段；"
                        f"综合评分 {b_score}→{a_score}（{trend}）。")
+            if pending_manual:
+                summary += f"另有 {len(pending_manual)} 项结构性问题需人工处理。"
             comparison = (f"优化前 {b_score} 分（{b_grade}），优化后 {a_score} 分（{a_grade}）。"
                           + (f"已解决：{ '；'.join(resolved[:3]) }。" if resolved else ""))
             recommendation = "建议采用优化版。" if delta >= 0 else "评分未提升，建议人工复核后再决定是否采用。"
 
         return {
             "summary": summary,
-            "quality_before": {"score": b_score, "grade": b_grade, "issues": before_issues[:8]},
+            "quality_before": {"score": b_score, "grade": b_grade, "issues": unhandled_issues[:8]},
             "quality_after": {"score": a_score, "grade": a_grade, "improvements": improvements[:8]},
             "changes": changes[:50],
+            "pending_manual": pending_manual[:12],  # C：需人工处理的章节级问题
             "comparison": comparison,
             "recommendation": recommendation,
             "grounded": True,  # 标记：分数源自实测，非 LLM 生成

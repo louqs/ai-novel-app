@@ -32,6 +32,17 @@
 .pe-batch-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px}
 .pe-batch-item:last-child{border-bottom:none}
 
+/* 聚合报告章节卡片 */
+.pe-agg-ch{display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer;transition:all 0.15s;font-size:12px}
+.pe-agg-ch:hover{background:var(--surface);box-shadow:0 2px 6px rgba(0,0,0,0.1)}
+.pe-agg-ch-num{font-weight:700;color:var(--accent);min-width:40px}
+.pe-agg-ch-score{font-weight:600;min-width:60px}
+.pe-agg-ch-score.bad{color:var(--bad)}
+.pe-agg-ch-score.warn{color:var(--warn)}
+.pe-agg-ch-score.ok{color:var(--ok)}
+.pe-agg-ch-ai{font-size:11px;color:var(--text-muted);min-width:70px}
+.pe-agg-ch-issue{font-size:11px;color:var(--text-muted);min-width:60px}
+
 /* 对比区 */
 .pe-compare{display:flex;gap:12px;min-height:420px;margin-top:16px}
 .pe-compare-col{flex:1;display:flex;flex-direction:column}
@@ -108,6 +119,10 @@
 
 /* 操作栏 */
 .pe-actions{display:flex;gap:8px;justify-content:flex-end;padding:12px 0;margin-top:8px;border-top:1px solid var(--border)}
+
+/* 实时进度步骤 */
+.pe-pstep{padding:1px 0;transition:opacity 0.3s}
+.pe-pstep[data-done="1"]{opacity:0.55}
 </style>
 {% endblock %}
 
@@ -117,9 +132,15 @@
     <div class="pe-overlay-card">
         <div class="spinner"></div>
         <div style="font-size:14px;font-weight:600;margin-bottom:8px">AI 正在优化中...</div>
-        <div id="pe-overlay-msg" style="font-size:12px;color:var(--text-muted)">正在分析文本，请稍候</div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:12px">首次调用可能需要 30-60 秒</div>
-        <button class="btn" onclick="peCancel()" style="margin-top:16px;padding:6px 24px">⏹ 停止</button>
+        <div id="pe-overlay-msg" style="font-size:12px;color:var(--text-muted);margin-bottom:10px">正在分析文本，请稍候</div>
+        <!-- 实时进度步骤 -->
+        <div id="pe-progress-steps" style="text-align:left;max-width:340px;margin:0 auto 12px;font-size:12px;line-height:2"></div>
+        <!-- 进度条 -->
+        <div style="background:var(--bg);border-radius:4px;height:4px;max-width:340px;margin:0 auto 8px;overflow:hidden">
+            <div id="pe-progress-bar" style="height:100%;background:var(--accent);width:0%;transition:width 0.4s;border-radius:4px"></div>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted)">首次调用可能需要 30-60 秒</div>
+        <button class="btn" onclick="peCancel()" style="margin-top:12px;padding:6px 24px">⏹ 停止</button>
     </div>
 </div>
 
@@ -178,6 +199,35 @@
             <div id="pe-batch-items" style="margin-top:8px;max-height:200px;overflow-y:auto"></div>
         </div>
 
+        <!-- 项目级聚合报告 -->
+        <div id="pe-aggregate" class="pe-batch-prog" style="display:none">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;cursor:pointer" onclick="peToggleAggregate(this)">
+                <span style="font-size:13px;font-weight:600">📊 项目质量汇总</span>
+                <span style="display:flex;align-items:center;gap:6px">
+                    <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();peApplyAllToProject()" style="font-size:11px">✅ 全部应用到项目</button>
+                    <span id="pe-agg-toggle-btn" style="font-size:11px;color:var(--text-muted)">收起 ▲</span>
+                </span>
+            </div>
+            <div id="pe-agg-body">
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
+                    <div style="background:var(--bg);padding:10px;border-radius:6px;text-align:center">
+                        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">已优化章节</div>
+                        <div id="pe-agg-total" style="font-size:20px;font-weight:700;color:var(--accent)">0</div>
+                    </div>
+                    <div style="background:var(--bg);padding:10px;border-radius:6px;text-align:center">
+                        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">平均评分</div>
+                        <div id="pe-agg-score" style="font-size:20px;font-weight:700;color:var(--ok)">0</div>
+                    </div>
+                    <div style="background:var(--bg);padding:10px;border-radius:6px;text-align:center">
+                        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">平均 AI 率</div>
+                        <div id="pe-agg-ai" style="font-size:20px;font-weight:700;color:var(--warn)">0%</div>
+                    </div>
+                </div>
+                <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">章节明细（按评分升序，最差章在前，点击查看）</div>
+                <div id="pe-agg-list" style="max-height:300px;overflow-y:auto"></div>
+            </div>
+        </div>
+
         <div id="pe-status" style="font-size:11px;color:var(--text-muted);margin-top:8px"></div>
     </div>
 
@@ -219,7 +269,7 @@
                 <span id="pe-orig-count" style="color:var(--text-muted);font-weight:400">0 字</span>
             </div>
             <div>
-                <span>✨ 优化版 <span id="pe-opt-title" style="color:var(--text-muted);font-weight:400;font-size:11px"></span></span>
+                <span>✨ 优化版 <span id="pe-opt-title" style="color:var(--text-muted);font-weight:400;font-size:11px"></span><span id="pe-version-badge" style="display:none;margin-left:6px;padding:1px 7px;border-radius:8px;font-size:10px;font-weight:600"></span></span>
                 <span>
                     <span id="pe-opt-count" style="color:var(--text-muted);font-weight:400;margin-right:8px">0 字</span>
                     <button class="btn btn-sm btn-primary" onclick="peApplyResult()" style="font-size:10px">✅ 应用到章节</button>
@@ -227,6 +277,10 @@
                 </span>
             </div>
         </div>
+        <!-- 版本说明提示行 -->
+        <div id="pe-version-hint" style="padding:4px 12px;font-size:11px;color:var(--text-muted);background:var(--surface2);border-bottom:1px solid var(--border)"></div>
+        <!-- 操作状态条（降重/导入PDF时显示） -->
+        <div id="pe-action-status" style="display:none;padding:6px 12px;font-size:12px;background:var(--surface2);border-bottom:1px solid var(--border);transition:opacity 0.3s"></div>
         <!-- 单滚动容器：逐行并排，左右天然对齐 -->
         <div class="pe-grid" id="pe-grid"></div>
 
@@ -243,5 +297,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/pipeline_editor.js?v=12"></script>
+<script src="/static/pipeline_editor.js?v=21"></script>
 {% endblock %}

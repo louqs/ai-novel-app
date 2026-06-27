@@ -334,19 +334,40 @@ async def list_chapters(project_id: str):
 
 @router.delete("/api/v1/projects/{project_id}/chapters/{ch_num}")
 async def delete_chapter(project_id: str, ch_num: int, volume: int = 1):
-    """删除指定章节。"""
+    """删除指定章节。
+
+    章节可能只存在于文件系统（如数据库写入失败、重新生成大纲后残留旧文件）。
+    list_chapters 会合并 DB + 文件系统两个来源显示为「已生成」，因此删除也必须
+    同时清理两处，否则会出现「列表显示已生成、删除却提示不存在」的状态不一致。
+    """
     kernel = await get_kernel()
-    if not kernel.db:
-        return {"status": "error", "message": "数据库未初始化"}
-    # 检查章节是否存在
-    existing = await kernel.db.get_chapter(project_id, ch_num, volume)
-    if not existing:
+    chapter_id = f"ch_v{volume:02d}_{ch_num:04d}"
+    md_path = kernel._data_dir / project_id / "chapters" / f"{chapter_id}.md"
+
+    in_db = False
+    if kernel.db:
+        existing = await kernel.db.get_chapter(project_id, ch_num, volume)
+        in_db = existing is not None
+
+    file_exists = md_path.exists()
+
+    # DB 与文件系统两处都没有，才算真不存在
+    if not in_db and not file_exists:
         return {"status": "error", "message": "章节不存在"}
-    await kernel.db.delete_chapter(project_id, ch_num, volume)
-    # 同步更新 current_chapter
-    chapters = await kernel.db.list_chapters(project_id)
-    max_ch = max((c.get("chapter_number", 0) for c in chapters), default=0)
-    await kernel.db.update_project(project_id, {"current_chapter": max_ch})
+
+    if in_db:
+        await kernel.db.delete_chapter(project_id, ch_num, volume)
+    if file_exists:
+        try:
+            md_path.unlink()
+        except OSError as e:
+            return {"status": "error", "message": f"章节文件删除失败: {e}"}
+
+    # 同步更新 current_chapter（以剩余章节最大号为准）
+    if kernel.db:
+        chapters = await kernel.db.list_chapters(project_id)
+        max_ch = max((c.get("chapter_number", 0) for c in chapters), default=0)
+        await kernel.db.update_project(project_id, {"current_chapter": max_ch})
     return {"status": "ok", "message": f"第{volume}卷第{ch_num}章已删除"}
 
 
