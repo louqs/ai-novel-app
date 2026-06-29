@@ -125,6 +125,8 @@ class OutlinePlannerPlugin:
         volumes: int = 4,
         target_words_per_chapter: int = 3000,
         genre_tags: list[str] | None = None,
+        provider: str | None = None,
+        model: str | None = None,
     ) -> Progress:
         """生成分卷大纲.
 
@@ -155,6 +157,7 @@ class OutlinePlannerPlugin:
                 settings, characters, direction, platform, total_chapters, pacing,
                 target_words_per_chapter=target_words_per_chapter,
                 genre_brief=genre_brief,
+                provider=provider, model=model,
             )
             all_volumes = [VolumeOutline(
                 volume_number=1,
@@ -163,11 +166,14 @@ class OutlinePlannerPlugin:
                 chapters=chapters,
             )]
         else:
-            # 分卷模式：先生成卷级大纲，再并行生成每卷章节
+            # 分卷模式：代码层算好每卷章节数，LLM 只管填标题和弧光（不再让 LLM 做算术）
+            chapters_per_vol = self._distribute_chapters(total_chapters, volumes)
             volume_outlines = await self._generate_volumes(
                 settings, characters, direction, platform, total_chapters, volumes, pacing,
                 target_words_per_chapter=target_words_per_chapter,
                 genre_brief=genre_brief,
+                chapters_per_vol=chapters_per_vol,
+                provider=provider, model=model,
             )
 
             import asyncio
@@ -179,6 +185,7 @@ class OutlinePlannerPlugin:
                     target_words_per_chapter=target_words_per_chapter,
                     is_last_volume=is_last_vol,
                     genre_brief=genre_brief,
+                    provider=provider, model=model,
                 )
                 vol["chapters"] = chapters
                 return vol
@@ -206,8 +213,15 @@ class OutlinePlannerPlugin:
         *,
         target_words_per_chapter: int = 3000,
         genre_brief: str = "",
+        chapters_per_vol: list[int] | None = None,
+        provider: str | None = None,
+        model: str | None = None,
     ) -> list[dict[str, Any]]:
-        """生成卷级大纲."""
+        """生成卷级大纲.
+
+        Args:
+            chapters_per_vol: 每卷精确章节数（代码层算好，不再依赖 LLM 做算术）.
+        """
         chars_summary = self._summarize_characters(characters)
 
         title = direction.get('title', '')
@@ -215,7 +229,7 @@ class OutlinePlannerPlugin:
         core_conflict = direction.get('core_conflict', '')
         world_name = settings.get('world_name', '')
 
-        # 构建故事描述，确保有足够信息（不传书名，避免 LLM 把书名加到卷名/章节名中）
+        # 构建故事描述
         story_parts = []
         if logline:
             story_parts.append(f"**故事简介**: {logline}")
@@ -229,6 +243,21 @@ class OutlinePlannerPlugin:
         words_min = max(1500, int(target_words_per_chapter * 0.7))
         words_max = int(target_words_per_chapter * 1.3)
 
+        # 如果提供了 chapters_per_vol，用精确章节数；否则让 LLM 自己分
+        chapters_spec = ""
+        if chapters_per_vol and len(chapters_per_vol) == num_volumes:
+            chapter_ranges = []
+            start = 1
+            for i, cnt in enumerate(chapters_per_vol):
+                end = start + cnt - 1
+                chapter_ranges.append(f"第{start}章-第{end}章")
+                start = end + 1
+            chapters_spec = "\n".join(
+                f"- 第{i+1}卷：{cnt}章（{rng}）"
+                for i, (cnt, rng) in enumerate(zip(chapters_per_vol, chapter_ranges))
+            )
+            chapters_spec = f"\n**每卷精确章节数（必须严格遵守）**:\n{chapters_spec}\n"
+
         prompt = f"""请为以下小说规划分卷大纲:
 
 {story_info}
@@ -238,7 +267,7 @@ class OutlinePlannerPlugin:
 **分卷数**: {num_volumes}
 **每章目标字数**: {target_words_per_chapter}字（范围: {words_min}-{words_max}字/章）
 **平台节奏**: {pacing}
-{genre_brief}
+{chapters_spec}{genre_brief}
 
 ⚠️ **核心约束**: 这是一部{total_chapters}章的完整小说，必须在{total_chapters}章内讲完一个完整故事。请根据章节数合理控制故事复杂度——章节数少就写单线故事，章节数多才能写多线交织。
 
@@ -251,7 +280,7 @@ class OutlinePlannerPlugin:
       "title": "卷名",
       "arc_description": "本卷起承转合（3-5句话）",
       "chapter_range": "第X章-第Y章",
-      "chapters_count": 25
+      "chapters_count": {chapters_per_vol[0] if chapters_per_vol else 25}
     }}
   ]
 }}
@@ -265,18 +294,13 @@ class OutlinePlannerPlugin:
 - **故事复杂度必须匹配章节数**: {total_chapters}章只能支撑相应复杂度的故事，不要设置太多悬念线
 - 每章内容规划需符合 {target_words_per_chapter} 字的目标字数（{words_min}-{words_max}字范围）"""
 
-        result = await self._kernel.call_llm(
-            messages=[
-                {"role": "system", "content": OUTLINE_PLANNER_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            tier="standard",
-            max_tokens=3000,
-            temperature=0.7,
-        )
-
-        data = self._parse_json(result["content"])
-        return data.get("volumes", [])
+        data = await self._call_llm_and_parse(prompt, label="卷级大纲", max_tokens=8000, provider=provider, model=model)
+        volumes = data.get("volumes", [])
+        # 如果提供了精确章节数，强制修正 LLM 返回的 chapters_count
+        if chapters_per_vol and len(volumes) == len(chapters_per_vol):
+            for i, cnt in enumerate(chapters_per_vol):
+                volumes[i]["chapters_count"] = cnt
+        return volumes
 
     async def _generate_chapters(
         self,
@@ -290,6 +314,8 @@ class OutlinePlannerPlugin:
         target_words_per_chapter: int = 3000,
         is_last_volume: bool = False,
         genre_brief: str = "",
+        provider: str | None = None,
+        model: str | None = None,
     ) -> list[dict[str, Any]]:
         """为单卷生成章节节点."""
         chapters_count = volume.get("chapters_count", 25)
@@ -351,17 +377,7 @@ class OutlinePlannerPlugin:
 {"- **最后一卷必须有完整结局**: 最后2-3章是故事结局，主要冲突解决，重要伏笔回收，给读者完整体验" if is_last_volume else "- 如果是最后一卷，最后几章必须是故事结局，主要冲突解决，重要伏笔回收"}
 - **summary 只写本章具体发生了什么**，不要写"主要冲突解决"、"伏笔回收"、"给读者体验"这类元描述，要写具体的情节内容"""
 
-        result = await self._kernel.call_llm(
-            messages=[
-                {"role": "system", "content": OUTLINE_PLANNER_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            tier="standard",
-            max_tokens=6000,
-            temperature=0.7,
-        )
-
-        data = self._parse_json(result["content"])
+        data = await self._call_llm_and_parse(prompt, label=f"章节大纲(卷{vol_num})", max_tokens=8000, provider=provider, model=model)
         return data.get("chapters", [])
 
     async def _generate_flat_chapters(
@@ -375,6 +391,8 @@ class OutlinePlannerPlugin:
         *,
         target_words_per_chapter: int = 3000,
         genre_brief: str = "",
+        provider: str | None = None,
+        model: str | None = None,
     ) -> list[dict[str, Any]]:
         """不分卷模式：直接生成所有章节节点."""
         # 故事上下文（不传书名，避免 LLM 把书名加到章节标题中）
@@ -431,18 +449,46 @@ class OutlinePlannerPlugin:
 - **故事复杂度必须匹配{total_chapters}章**: 不要设置太多角色和支线，确保能在限定章节数内讲完
 - **summary 只写本章具体发生了什么**，不要写"主要冲突解决"、"伏笔回收"、"给读者体验"这类元描述，要写具体的情节内容"""
 
-        result = await self._kernel.call_llm(
-            messages=[
-                {"role": "system", "content": OUTLINE_PLANNER_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            tier="standard",
-            max_tokens=8000,
-            temperature=0.7,
-        )
-
-        data = self._parse_json(result["content"])
+        data = await self._call_llm_and_parse(prompt, label="平铺大纲", max_tokens=8000, provider=provider, model=model)
         return data.get("chapters", [])
+
+    async def _call_llm_and_parse(
+        self, prompt: str, *, label: str = "", max_tokens: int = 8000, max_retries: int = 2,
+        provider: str | None = None, model: str | None = None,
+    ) -> dict[str, Any]:
+        """调用 LLM 并解析 JSON，失败自动重试（重试时提示精简输出）."""
+        last_content = ""
+        for attempt in range(max_retries):
+            extra_hint = ""
+            if attempt > 0:
+                extra_hint = "\n\n⚠️ 上次输出被截断或格式错误。请精简输出：1) 每个章节的 summary 控制在30字以内 2) key_events/character_moments 每项不超过10个字 3) 只返回 JSON，不要任何额外文字"
+            result = await self._kernel.call_llm(
+                messages=[
+                    {"role": "system", "content": OUTLINE_PLANNER_SYSTEM},
+                    {"role": "user", "content": prompt + extra_hint},
+                ],
+                tier="standard",
+                max_tokens=max_tokens,
+                temperature=0.7,
+                provider=provider,
+                model=model,
+            )
+            content = result.get("content", "")
+            last_content = content
+            logger.debug(f"{label} LLM 返回 (attempt {attempt+1})", content_len=len(content), content_preview=content[:300])
+            data = self._parse_json(content)
+            if data:
+                return data
+            logger.warning(f"{label} JSON 解析失败 (attempt {attempt+1}/{max_retries})", raw_content=content[:500])
+        logger.error(f"{label} 所有重试均失败", last_content=last_content[:500])
+        return {}
+
+    @staticmethod
+    def _distribute_chapters(total_chapters: int, num_volumes: int) -> list[int]:
+        """将总章节数均匀分配到各卷，余数从第一卷开始补（确保总和精确）."""
+        base = total_chapters // num_volumes
+        remainder = total_chapters % num_volumes
+        return [base + (1 if i < remainder else 0) for i in range(num_volumes)]
 
     @staticmethod
     def _summarize_characters(characters: dict) -> str:
@@ -487,6 +533,8 @@ class OutlinePlannerPlugin:
                             return json.loads(content[start:i + 1])
                         except json.JSONDecodeError:
                             break
+        # 解析失败 — 记录原始内容片段便于排查
+        logger.warning("大纲 JSON 解析失败，返回空结果", content_preview=content[:500] if content else "(empty)")
         return {}
 
 

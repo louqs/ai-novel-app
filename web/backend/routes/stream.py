@@ -54,12 +54,16 @@ async def _run_outline_generation(pid: str, num_versions: int = 3, num_volumes: 
             await kernel.db.save_outline_job(pid, "generating", num_versions, 0, [], "正在分析项目...")
 
         # 通过 GenerationService 生成多版本
+        _completed_count = 0  # 用独立计数器跟踪已完成版本数（含失败的）
+
         async def on_progress(vi: int, result):
+            nonlocal _completed_count
             # 检查取消请求
             if _outline_jobs.get(pid, {}).get("cancel_requested"):
                 raise asyncio.CancelledError("用户取消大纲生成")
 
             _outline_jobs[pid]["ts"] = time.time()
+            _completed_count += 1
 
             if result.success:
                 total_chs = sum(len(v.get("chapters", [])) for v in result.progress.get("volumes", []))
@@ -71,14 +75,22 @@ async def _run_outline_generation(pid: str, num_versions: int = 3, num_volumes: 
                     "style_tag": style_tag,
                 }
                 versions.append(version_data)
+            else:
+                # 失败版本也记录，前端可以显示"生成失败"提示
+                versions.append({
+                    "data": {"project_id": "", "volumes": [], "quota_min_words_per_chapter": 2100, "quota_max_words_per_chapter": 3900,
+                             "total_chapters_completed": 0, "total_words_written": 0},
+                    "volumes": 0, "chapters": 0,
+                    "style_tag": "生成失败",
+                    "error": result.error or "未知错误",
+                })
 
             # 用已完成数量作为进度（并行生成时完成顺序不确定）
-            done_count = len(versions)
-            _outline_jobs[pid]["current"] = done_count
-            _outline_jobs[pid]["message"] = f"已生成 {done_count}/{num_versions} 个版本..."
+            _outline_jobs[pid]["current"] = _completed_count
+            _outline_jobs[pid]["message"] = f"已生成 {_completed_count}/{num_versions} 个版本..."
             if kernel.db:
-                await kernel.db.save_outline_job(pid, "generating", num_versions, done_count, versions,
-                    f"已生成 {done_count}/{num_versions} 个版本...")
+                await kernel.db.save_outline_job(pid, "generating", num_versions, _completed_count, versions,
+                    f"已生成 {_completed_count}/{num_versions} 个版本...")
 
         await gs.generate_outline_versions(pid, num_versions=num_versions, volumes=num_volumes,
                                             on_progress=on_progress, tasks_ref=gen_tasks)

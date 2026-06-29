@@ -1139,7 +1139,8 @@ async function _pollOutlineStatus() {
                     if (styleTag) html += '<span style="font-size:10px;padding:2px 8px;background:var(--accent);color:white;border-radius:10px">' + esc(styleTag) + '</span>';
                     html += '</div>';
                     if (isEmpty) {
-                        html += '<div style="font-size:11px;color:var(--bad);margin-top:4px">⚠ 该方案生成失败（无有效内容）</div>';
+                        var errMsg = ver.error ? esc(ver.error).substring(0, 100) : '无有效内容';
+                        html += '<div style="font-size:11px;color:var(--bad);margin-top:4px">⚠ 该方案生成失败（' + errMsg + '）</div>';
                     } else {
                         var volInfo = vols.length > 1 ? vols.length + ' 卷 · ' : '';
                         html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' + volInfo + totalChs + ' 章</div>';
@@ -1184,28 +1185,38 @@ async function _pollOutlineStatus() {
                 });
 
                 // 显示完成状态 + 所有版本卡片
-                var html = '<p class="muted" style="margin-bottom:12px">✅ 大纲生成完成，共 ' + _outlineVersions.length + ' 个方案</p>';
+                var validCount = _outlineVersions.filter(function(v) { return v.volumes && v.volumes.length > 0; }).length;
+                var statusIcon = validCount > 0 ? '✅' : '❌';
+                var html = '<p class="muted" style="margin-bottom:12px">' + statusIcon + ' 大纲生成完成，' + validCount + '/' + _outlineVersions.length + ' 个方案有效</p>';
                 html += '<div style="display:flex;flex-direction:column;gap:8px">';
                 _outlineVersions.forEach(function(ver, idx) {
                     var vols = ver.volumes || [];
                     var totalChs = 0;
                     vols.forEach(function(v) { totalChs += (v.chapters || []).length; });
                     var styleTag = ver._style_tag || '';
-                    html += '<div class="version-card" style="cursor:pointer" onclick="_previewOutlineVersion(' + idx + ')">';
+                    var isEmpty = vols.length === 0 || totalChs === 0;
+                    html += '<div class="version-card" style="cursor:pointer' + (isEmpty ? ';opacity:0.5' : '') + '" onclick="_previewOutlineVersion(' + idx + ')">';
                     html += '<div style="display:flex;justify-content:space-between;align-items:center">';
                     html += '<strong style="font-size:13px">方案 ' + (idx + 1) + '</strong>';
-                    if (styleTag) html += '<span style="font-size:10px;padding:2px 8px;background:var(--accent);color:white;border-radius:10px">' + esc(styleTag) + '</span>';
+                    if (styleTag) html += '<span style="font-size:10px;padding:2px 8px;background:' + (isEmpty ? 'var(--bad)' : 'var(--accent)') + ';color:white;border-radius:10px">' + esc(styleTag) + '</span>';
                     html += '</div>';
-                    var volInfo = vols.length > 1 ? vols.length + ' 卷 · ' : '';
-                    html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' + volInfo + totalChs + ' 章</div>';
-                    if (vols.length > 0 && vols[0].chapters && vols[0].chapters.length > 0) {
+                    if (isEmpty) {
+                        var errMsg = ver.error ? esc(ver.error).substring(0, 100) : '无有效内容';
+                        html += '<div style="font-size:11px;color:var(--bad);margin-top:4px">⚠ 该方案生成失败（' + errMsg + '）</div>';
+                    } else {
+                        var volInfo = vols.length > 1 ? vols.length + ' 卷 · ' : '';
+                        html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' + volInfo + totalChs + ' 章</div>';
+                    }
+                    if (!isEmpty && vols.length > 0 && vols[0].chapters && vols[0].chapters.length > 0) {
                         var firstCh = vols[0].chapters[0];
                         html += '<div style="font-size:11px;margin-top:4px;color:var(--text)">Ch1: ' + esc(firstCh.title || '无标题') + '</div>';
                         if (firstCh.summary) html += '<div style="font-size:10px;color:var(--text-muted);margin-top:2px">' + esc(firstCh.summary).substring(0, 60) + '...</div>';
                     }
                     html += '<div style="display:flex;gap:4px;margin-top:8px">';
-                    html += '<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();_applyOutlineVersion(' + idx + ')" style="font-size:10px">✅ 应用此方案</button>';
-                    html += '<button class="btn btn-sm" onclick="event.stopPropagation();_previewOutlineVersion(' + idx + ')" style="font-size:10px">👁️ 预览</button>';
+                    if (!isEmpty) {
+                        html += '<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();_applyOutlineVersion(' + idx + ')" style="font-size:10px">✅ 应用此方案</button>';
+                        html += '<button class="btn btn-sm" onclick="event.stopPropagation();_previewOutlineVersion(' + idx + ')" style="font-size:10px">👁️ 预览</button>';
+                    }
                     html += '</div>';
                     html += '</div>';
                 });
@@ -1214,8 +1225,13 @@ async function _pollOutlineStatus() {
 
                 _clearOutlineVersions(currentProjectId);
                 _saveOutlineVersions(_outlineVersions, currentProjectId);
-                // 不自动保存草稿，等用户明确应用某个版本
-                toast('大纲生成完成，共 ' + _outlineVersions.length + ' 个方案', 'success');
+                // 统计有效方案数
+                var validCount = _outlineVersions.filter(function(v) { return v.volumes && v.volumes.length > 0; }).length;
+                if (validCount > 0) {
+                    toast('大纲生成完成，共 ' + validCount + ' 个有效方案', 'success');
+                } else {
+                    toast('所有版本均生成失败，请检查 LLM 配置后重试', 'error');
+                }
             } else {
                 tree.innerHTML = '<p class="muted">未生成有效大纲</p>';
                 toast('所有版本均生成失败', 'error');

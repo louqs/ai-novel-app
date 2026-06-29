@@ -157,7 +157,11 @@
       "Bash(./.venv/Scripts/python.exe -m pytest tests/test_pipeline_editor.py -v --tb=short)",
       "Bash(./.venv/Scripts/python.exe -m pytest tests/ -m smoke --tb=short)",
       "Bash(./.venv/Scripts/python.exe -c \"from plugins.pipeline_editor import plugin; from web.backend.routes import workbench; print\\('imports OK'\\)\")",
-      "Bash(node *)"
+      "Bash(node *)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/ -v -m smoke --tb=short -q)",
+      "WebFetch(domain:github.com)",
+      "Bash(gh repo *)",
+      "Bash(npx skills *)"
     ]
   }
 }

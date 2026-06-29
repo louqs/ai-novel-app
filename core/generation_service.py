@@ -86,6 +86,8 @@ class GenerationService:
         temperature: float = 0.7,
         total_chapters: int | None = None,
         volumes: int | None = None,
+        provider: str | None = None,
+        model: str | None = None,
     ) -> OutlineResult:
         """调用 outline-planner 插件生成大纲.
 
@@ -95,6 +97,8 @@ class GenerationService:
             temperature: LLM 温度
             total_chapters: 总章节数（None 则根据项目篇幅自动决定）
             volumes: 分卷数（None 则根据章节数自动决定）
+            provider: LLM Provider（None 则用当前 standard tier 配置）
+            model: 指定模型名（None 则用 provider 默认模型）
         """
         try:
             data = await self.load_project_data(project_id)
@@ -130,6 +134,8 @@ class GenerationService:
                 volumes=volumes,
                 target_words_per_chapter=data.target_words_per_chapter,
                 genre_tags=data.genre_tags,
+                provider=provider,
+                model=model,
             )
 
             progress_dict = progress_model.model_dump() if hasattr(progress_model, 'model_dump') else progress_model
@@ -153,6 +159,8 @@ class GenerationService:
         volumes: int | None = None,
         on_progress: Callable[[int, OutlineResult], Awaitable[None]] | None = None,
         tasks_ref: list | None = None,
+        provider: str | None = None,
+        model: str | None = None,
     ) -> list[OutlineResult]:
         """生成多个风格变体（并行生成，大幅提速）.
 
@@ -161,6 +169,8 @@ class GenerationService:
             num_versions: 生成数量
             on_progress: 进度回调 (version_index, result)
             tasks_ref: 可选列表，用于接收 asyncio.Task 引用以便外部取消
+            provider: LLM Provider（None 则用当前 standard tier 配置）
+            model: 指定模型名（None 则用 provider 默认模型）
         """
         import asyncio
 
@@ -211,6 +221,8 @@ class GenerationService:
                     volumes=vol,
                     target_words_per_chapter=data.target_words_per_chapter,
                     genre_tags=data.genre_tags,
+                    provider=provider,
+                    model=model,
                 )
                 progress_dict = progress_model.model_dump() if hasattr(progress_model, 'model_dump') else progress_model
                 return i, OutlineResult(success=True, progress=progress_dict, style_hint=hint, temperature=temp)
